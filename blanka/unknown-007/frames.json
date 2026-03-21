@@ -1,0 +1,47 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\SNES - Super Street Fighter II_ The New Challengers - Fighters - Blanka.gif",
+  "bg": [
+    0,
+    89,
+    214
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "000.png",
+      "blobs": [
+        {
+          "x0": 409,
+          "y0": 154,
+          "x1": 494,
+          "y1": 245
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "file": "001.png",
+      "blobs": [
+        {
+          "x0": 504,
+          "y0": 157,
+          "x1": 593,
+          "y1": 245
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "file": "002.png",
+      "blobs": [
+        {
+          "x0": 598,
+          "y0": 161,
+          "x1": 665,
+          "y1": 245
+        }
+      ]
+    }
+  ]
+}
