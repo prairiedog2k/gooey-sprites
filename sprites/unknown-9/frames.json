@@ -1,0 +1,35 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\ehonda-spritesheet.gif",
+  "bg": [
+    72,
+    96,
+    64
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "000.png",
+      "blobs": [
+        {
+          "x0": 1098,
+          "y0": 161,
+          "x1": 1164,
+          "y1": 253
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "file": "001.png",
+      "blobs": [
+        {
+          "x0": 1172,
+          "y0": 185,
+          "x1": 1234,
+          "y1": 254
+        }
+      ]
+    }
+  ]
+}

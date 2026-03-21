@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -c \"import pytesseract; print\\(pytesseract.get_tesseract_version\\(\\)\\)\")",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\")",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred Hand Slap\" --output ./out)",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Idle\" --output ./out2)",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred\" --output ./out2)",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred\" --output ./out3)",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Idle\" --output ./out3)",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Crouch H. Punch\" --output ./out3)",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Walking\" --output ./out3)",
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred\" --output ./out4)"
+    ]
+  }
+}

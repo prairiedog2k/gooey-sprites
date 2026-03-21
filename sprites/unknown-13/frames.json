@@ -1,0 +1,47 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\ehonda-spritesheet.gif",
+  "bg": [
+    72,
+    96,
+    64
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "000.png",
+      "blobs": [
+        {
+          "x0": 486,
+          "y0": 316,
+          "x1": 548,
+          "y1": 376
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "file": "001.png",
+      "blobs": [
+        {
+          "x0": 555,
+          "y0": 314,
+          "x1": 641,
+          "y1": 376
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "file": "002.png",
+      "blobs": [
+        {
+          "x0": 646,
+          "y0": 316,
+          "x1": 708,
+          "y1": 376
+        }
+      ]
+    }
+  ]
+}
