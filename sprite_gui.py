@@ -1,5 +1,6 @@
 """SpriteGUI — main application window."""
 
+import shutil
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -22,6 +23,22 @@ from dialogs import _InputDialog
 from compose_window import ComposeWindow
 
 
+# ── undo helpers ──────────────────────────────────────────────────────────────
+
+def _snapshot_anim_dir(anim_dir: Path) -> dict[str, bytes]:
+    """Return a {filename: bytes} snapshot of every file in anim_dir."""
+    return {f.name: f.read_bytes() for f in anim_dir.iterdir() if f.is_file()}
+
+
+def _restore_anim_dir(anim_dir: Path, snapshot: dict[str, bytes]) -> None:
+    """Recreate anim_dir from a snapshot, replacing whatever is there."""
+    if anim_dir.exists():
+        shutil.rmtree(anim_dir)
+    anim_dir.mkdir(parents=True)
+    for name, data in snapshot.items():
+        (anim_dir / name).write_bytes(data)
+
+
 class SpriteGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -33,10 +50,13 @@ class SpriteGUI:
         self.v_gif    = tk.StringVar(value="")
         self.v_out    = tk.StringVar(value="./sprites")
         self.v_status = tk.StringVar(value="Ready.")
-        self.v_gap    = tk.IntVar(value=4)
-        self.v_tol    = tk.IntVar(value=20)
+        self.v_gap          = tk.IntVar(value=4)
+        self.v_tol          = tk.IntVar(value=20)
+        self.v_minpx        = tk.IntVar(value=100)
+        self.v_filter_false = tk.BooleanVar(value=False)
 
         self._anim_dirs: list[Path] = []
+        self._flagged_anims: set[str] = set()
         self.selected_anim: Path | None = None
         self.selected_frames: set[int] = set()
         self._frame_images: list[ImageTk.PhotoImage] = []
@@ -45,6 +65,8 @@ class SpriteGUI:
         self._project_path: Path | None = None   # currently open .ssproj
         self._managed_anims: list[str] = []      # folder names this project created
         self._dirty: bool = False                 # unsaved changes since last save
+        self._undo_stack: list[tuple[str, object]] = []   # (description, callable)
+        self._MAX_UNDO = 50
 
         # preview state
         self._pv_frames:   list[Path] = []
@@ -69,6 +91,19 @@ class SpriteGUI:
         self._drag_start_xy: tuple      = (0, 0)
         self._drag_indicator: tk.Frame | None = None
 
+        # palette panel state
+        self._pal_colors: list = []          # [(r, g, b, count), …]
+        self._pal_n_colors      = tk.IntVar(value=16)
+        self._pal_selected_idx: int | None = None
+        self._pal_canvas:       tk.Canvas | None = None
+        self._pal_count_lbl:    tk.Label  | None = None
+        self._pal_n_lbl:        tk.Label  | None = None
+        self._pal_hover_label:  tk.Label  | None = None
+        # color-frames section (bottom half of palette panel)
+        self._pal_col_canvas:   tk.Canvas | None = None
+        self._pal_col_hdr_lbl:  tk.Label  | None = None
+        self._pal_col_img_refs: list = []
+
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -77,6 +112,57 @@ class SpriteGUI:
     def _mark_dirty(self):
         self._dirty = True
         self._update_title()
+
+    # ── undo ──────────────────────────────────────────────────────────────────
+
+    def _push_undo(self, description: str, undo_fn) -> None:
+        self._undo_stack.append((description, undo_fn))
+        if len(self._undo_stack) > self._MAX_UNDO:
+            self._undo_stack.pop(0)
+        self._update_undo_menu()
+
+    def _clear_undo(self) -> None:
+        self._undo_stack.clear()
+        self._update_undo_menu()
+
+    def _do_undo(self) -> None:
+        if not self._undo_stack:
+            self._set_status("Nothing to undo.")
+            return
+        description, undo_fn = self._undo_stack.pop()
+        try:
+            undo_fn()
+        except Exception as exc:
+            messagebox.showerror("Undo Failed", str(exc))
+        self._mark_dirty()
+        self._update_undo_menu()
+        self._set_status(f"Undo: {description}")
+
+    def _update_undo_menu(self) -> None:
+        if not hasattr(self, "_edit_menu"):
+            return
+        if self._undo_stack:
+            desc = self._undo_stack[-1][0]
+            self._edit_menu.entryconfig(0, label=f"Undo {desc}",
+                                        state=tk.NORMAL)
+        else:
+            self._edit_menu.entryconfig(0, label="Undo", state=tk.DISABLED)
+
+    def _select_anim_by_path(self, path: Path) -> None:
+        """Select and display the animation at *path* if it still exists."""
+        self._load_output()
+        for i, d in enumerate(self._anim_dirs):
+            if d == path:
+                self.anim_list.selection_clear(0, tk.END)
+                self.anim_list.selection_set(i)
+                self.anim_list.see(i)
+                self.selected_anim = d
+                self.selected_frames.clear()
+                self._last_clicked = None
+                self.lbl_anim.config(text=d.name)
+                self._load_frames(d)
+                self._pv_load(d)
+                return
 
     # ── close ─────────────────────────────────────────────────────────────────
 
@@ -137,10 +223,20 @@ class SpriteGUI:
         file_menu.add_separator()
         file_menu.add_command(label="Exit",              command=self._on_close)
 
+        edit_menu = tk.Menu(menubar, tearoff=False,
+                            bg=BG_PANEL, fg=FG,
+                            activebackground=BG_SEL, activeforeground=ACCENT,
+                            relief=tk.FLAT)
+        menubar.add_cascade(label="Edit", menu=edit_menu)
+        edit_menu.add_command(label="Undo", command=self._do_undo,
+                              accelerator="Ctrl+Z", state=tk.DISABLED)
+        self._edit_menu = edit_menu
+
         self.root.bind_all("<Control-n>", lambda _: self._new_project())
         self.root.bind_all("<Control-o>", lambda _: self._open_project())
         self.root.bind_all("<Control-s>", lambda _: self._save_project())
         self.root.bind_all("<Control-S>", lambda _: self._save_project_as())
+        self.root.bind_all("<Control-z>", lambda _: self._do_undo())
 
     def _build_toolbar(self):
         bar = tk.Frame(self.root, bg=BG_PANEL, pady=6, padx=8)
@@ -149,7 +245,7 @@ class SpriteGUI:
         # row 1 – file paths
         r1 = tk.Frame(bar, bg=BG_PANEL)
         r1.pack(fill=tk.X, pady=2)
-        self._label(r1, "Sprite Sheet GIF:", width=16).pack(side=tk.LEFT)
+        self._label(r1, "Sprite Sheet:", width=16).pack(side=tk.LEFT)
         tk.Entry(r1, textvariable=self.v_gif, bg=BG_CARD, fg=FG,
                  insertbackground=FG, relief=tk.FLAT, width=55,
                  font=("Consolas", 9)).pack(side=tk.LEFT, padx=4)
@@ -176,12 +272,35 @@ class SpriteGUI:
         tk.Spinbox(r3, from_=0, to=100, textvariable=self.v_tol, width=4,
                    bg=BG_CARD, fg=FG, buttonbackground=BG_CARD,
                    relief=tk.FLAT).pack(side=tk.LEFT)
+        self._label(r3, "  Min px:").pack(side=tk.LEFT)
+        tk.Spinbox(r3, from_=0, to=5000, textvariable=self.v_minpx, width=5,
+                   bg=BG_CARD, fg=FG, buttonbackground=BG_CARD,
+                   relief=tk.FLAT).pack(side=tk.LEFT)
+        tk.Checkbutton(r3, text="  Filter false positives",
+                       variable=self.v_filter_false,
+                       bg=BG_PANEL, fg=FG, selectcolor=BG_CARD,
+                       activebackground=BG_PANEL, activeforeground=FG,
+                       relief=tk.FLAT, borderwidth=0,
+                       font=("", 9)).pack(side=tk.LEFT, padx=(8, 0))
+
+    _PAL_PANEL_W     = 160   # fixed pixel width of the palette strip
+    _PAL_SWATCH_COLS = 4     # swatches per row
+    _PAL_SWATCH_SIZE = 36    # target swatch size (px); actual = canvas_w / cols
 
     def _build_body(self):
-        pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL,
+        body = tk.Frame(self.root, bg=BG)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        # Palette panel – fixed width, anchored to the right
+        pal_frame = tk.Frame(body, bg=BG_PANEL, width=self._PAL_PANEL_W)
+        pal_frame.pack(side=tk.RIGHT, fill=tk.Y)
+        pal_frame.pack_propagate(False)
+        self._build_palette_panel(pal_frame)
+
+        pane = tk.PanedWindow(body, orient=tk.HORIZONTAL,
                               bg=BG, sashwidth=5, sashrelief=tk.FLAT,
                               sashpad=2)
-        pane.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        pane.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
 
         # ── left: animation list ──────────────────────────────────────────────
         left = tk.Frame(pane, bg=BG_PANEL, width=220)
@@ -327,11 +446,22 @@ class SpriteGUI:
                 self._save_project()
                 if self._dirty:
                     return
-        self._project_path = None
+        path = filedialog.asksaveasfilename(
+            title="New Project — Choose Location",
+            defaultextension=PROJECT_EXT,
+            filetypes=[("Sprite Sheet Project", f"*{PROJECT_EXT}"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        p = Path(path)
+        out_dir = p.parent / p.stem   # e.g. MyGame.ssproj → MyGame/
+
+        self._project_path = p
         self.v_gif.set("")
-        self.v_out.set("./sprites")
+        self.v_out.set(str(out_dir))
         self.v_gap.set(4)
         self.v_tol.set(20)
+        self.v_minpx.set(100)
         self._anim_dirs.clear()
         self.anim_list.delete(0, tk.END)
         self.selected_anim = None
@@ -343,9 +473,15 @@ class SpriteGUI:
         self.lbl_anim.config(text="")
         self.lbl_sel.config(text="")
         self._managed_anims.clear()
+        self._flagged_anims.clear()
+        self._pal_colors = []
+        self._pal_redraw()
         self._dirty = False
+        self._clear_undo()
+        # Write the project file immediately so the path is established on disk
+        self._write_current_project(p)
         self._update_title()
-        self._set_status("New project.")
+        self._set_status(f"New project '{p.stem}'.")
 
     def _open_project(self):
         path = filedialog.askopenfilename(
@@ -368,8 +504,11 @@ class SpriteGUI:
         self.v_out.set(out_abs or "./sprites")
         self.v_gap.set(int(data.get("gap", 4)))
         self.v_tol.set(int(data.get("tol", 20)))
+        self.v_minpx.set(int(data.get("min_pixels", 100)))
         self._managed_anims = list(data.get("animations", []))
+        self._flagged_anims = set(data.get("flagged_animations", []))
         self._dirty = False
+        self._clear_undo()
         self._update_title()
         self._set_status(f"Opened '{path.name}'.")
         self._load_output()
@@ -399,7 +538,9 @@ class SpriteGUI:
                            output=self.v_out.get().strip(),
                            gap=self.v_gap.get(),
                            tol=self.v_tol.get(),
-                           animations=self._managed_anims)
+                           min_pixels=self.v_minpx.get(),
+                           animations=self._managed_anims,
+                           flagged_animations=list(self._flagged_anims))
             self._dirty = False
             self._update_title()
             self._set_status(f"Project saved to '{path}'.")
@@ -410,7 +551,13 @@ class SpriteGUI:
 
     def _browse_gif(self):
         p = filedialog.askopenfilename(
-            filetypes=[("GIF files", "*.gif"), ("All files", "*.*")])
+            filetypes=[
+                ("Sprite sheets", "*.gif *.png *.jpg *.jpeg"),
+                ("GIF files",  "*.gif"),
+                ("PNG files",  "*.png"),
+                ("JPEG files", "*.jpg *.jpeg"),
+                ("All files",  "*.*"),
+            ])
         if p:
             self.v_gif.set(p)
 
@@ -435,7 +582,7 @@ class SpriteGUI:
     def _extract_all(self):
         gif = self.v_gif.get().strip()
         if not gif:
-            messagebox.showwarning("No GIF", "Please select a sprite sheet GIF first.")
+            messagebox.showwarning("No Sprite Sheet", "Please select a sprite sheet image first.")
             return
         out_root = Path(self.v_out.get().strip() or "./sprites")
 
@@ -454,17 +601,20 @@ class SpriteGUI:
             try:
                 from extract_sprites import SpriteSheet, save_animation
                 sheet   = SpriteSheet(gif, tol=tol)
-                results = sheet.extract_all(max_intra_gap=gap)
+                results = sheet.extract_all(max_intra_gap=gap,
+                                            min_pixels=self.v_minpx.get())
                 folders: list[str] = []
-                for n, (_, sprites, frames) in enumerate(results, 1):
+                scores:  list[int] = []
+                for n, (_, sprites, frames, score) in enumerate(results, 1):
                     folder  = f"unknown-{n:03d}"
                     out_dir = out_root / folder
                     save_animation(out_dir, sprites, frames, gif, sheet.bg, sheet.tol)
                     folders.append(folder)
+                    scores.append(score)
                     self.root.after(0, lambda c=len(folders), f=folder:
                                     self._set_status(f"Saved {c}: {f}"))
-                self.root.after(0, lambda fl=folders:
-                                self._finish_extract(str(out_root), fl))
+                self.root.after(0, lambda fl=folders, sc=scores:
+                                self._finish_extract(str(out_root), fl, sc))
             except Exception as exc:
                 self.root.after(0, lambda e=exc: (
                     self._set_status(f"Error: {e}"),
@@ -473,13 +623,43 @@ class SpriteGUI:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _finish_extract(self, out: str, folders: list[str]):
-        self._managed_anims = folders
+    def _finish_extract(self, out: str, folders: list[str],
+                        scores: list[int] | None = None):
+        from extract_sprites import flag_false_positives
+        flags = flag_false_positives(scores) if scores else [False] * len(folders)
+
+        out_root = Path(out)
+        if self.v_filter_false.get():
+            # Remove flagged animations from disk and from the list
+            kept_folders: list[str] = []
+            for folder, is_fp in zip(folders, flags):
+                if is_fp:
+                    import shutil as _shutil
+                    fp_dir = out_root / folder
+                    if fp_dir.is_dir():
+                        _shutil.rmtree(fp_dir)
+                else:
+                    kept_folders.append(folder)
+            self._managed_anims = kept_folders
+            self._flagged_anims = set()
+            n_removed = len(folders) - len(kept_folders)
+            status_extra = f" ({n_removed} false positives removed)" if n_removed else ""
+        else:
+            self._managed_anims = folders
+            self._flagged_anims = {
+                folder for folder, is_fp in zip(folders, flags) if is_fp
+            }
+            status_extra = (
+                f" ({len(self._flagged_anims)} flagged as possible false positives)"
+                if self._flagged_anims else ""
+            )
+
+        self._clear_undo()
         if self._project_path:
             self._write_current_project(self._project_path)
         else:
             self._mark_dirty()
-        self._set_status(f"Extracted {len(folders)} animations to '{out}'.")
+        self._set_status(f"Extracted {len(folders)} animations to '{out}'{status_extra}.")
         self._load_output()
 
     # ── animation list ────────────────────────────────────────────────────────
@@ -497,7 +677,11 @@ class SpriteGUI:
         self.anim_list.delete(0, tk.END)
         for a in anims:
             self.anim_list.insert(tk.END, a.name)
+            if a.name in self._flagged_anims:
+                i = self.anim_list.size() - 1
+                self.anim_list.itemconfig(i, fg=YELLOW)
         self._set_status(f"Loaded {len(anims)} animation(s) from '{out}'.")
+        self._refresh_palette()
 
     def _on_anim_select(self, _event=None):
         sel = self.anim_list.curselection()
@@ -512,8 +696,9 @@ class SpriteGUI:
         self.lbl_anim.config(text=anim_dir.name)
         self._load_frames(anim_dir)
         self._pv_load(anim_dir)
+        self._pv_play()
 
-    def _open_compose(self):
+    def _open_compose(self, initial_anim=None):
         out = self.v_out.get().strip()
         if not out or not Path(out).is_dir():
             messagebox.showwarning(
@@ -530,7 +715,7 @@ class SpriteGUI:
             parent       = self.root,
             output_dir   = Path(out),
             on_save      = _after_compose_save,
-            initial_anim = self.selected_anim)
+            initial_anim = initial_anim)
 
     def _rename_folder(self):
         if not self.selected_anim:
@@ -545,8 +730,13 @@ class SpriteGUI:
         if new_path.exists():
             messagebox.showerror("Rename", f"'{new_name}' already exists.")
             return
-        self.selected_anim.rename(new_path)
+        old_path = self.selected_anim
+        old_path.rename(new_path)
         self.selected_anim = new_path
+        def _undo_rename(op=old_path, np_=new_path):
+            np_.rename(op)
+            self._select_anim_by_path(op)
+        self._push_undo(f"Rename '{old_path.name}' → '{new_name}'", _undo_rename)
         self._mark_dirty()
         self._load_output()
         for i, d in enumerate(self._anim_dirs):
@@ -574,6 +764,10 @@ class SpriteGUI:
             return
         import shutil
         shutil.copytree(self.selected_anim, new_path)
+        def _undo_dup_anim(p=new_path):
+            shutil.rmtree(p)
+            self._load_output()
+        self._push_undo(f"Duplicate '{name}' → '{new_name}'", _undo_dup_anim)
         self._mark_dirty()
         self._load_output()
         for i, d in enumerate(self._anim_dirs):
@@ -594,7 +788,8 @@ class SpriteGUI:
                 f"Permanently delete '{name}' and all its files?\n\nThis cannot be undone.",
                 icon="warning"):
             return
-        import shutil
+        snap = _snapshot_anim_dir(self.selected_anim)
+        path = self.selected_anim
         shutil.rmtree(self.selected_anim)
         self.selected_anim = None
         self.selected_frames.clear()
@@ -605,6 +800,10 @@ class SpriteGUI:
             w.destroy()
         self._frame_images.clear()
         self._frame_cells.clear()
+        def _undo_delete_anim(p=path, s=snap):
+            _restore_anim_dir(p, s)
+            self._select_anim_by_path(p)
+        self._push_undo(f"Delete '{name}'", _undo_delete_anim)
         self._mark_dirty()
         self._load_output()
         self._set_status(f"Deleted '{name}'.")
@@ -724,7 +923,13 @@ class SpriteGUI:
         indices = sorted(self.selected_frames)
         try:
             from extract_sprites import cmd_stitch
+            snap = _snapshot_anim_dir(self.selected_anim)
+            path = self.selected_anim
             cmd_stitch(self.selected_anim, indices)
+            def _undo_merge(p=path, s=snap):
+                _restore_anim_dir(p, s)
+                self._select_anim_by_path(p)
+            self._push_undo(f"Merge frames {indices} in '{path.name}'", _undo_merge)
             self._mark_dirty()
             self._set_status(f"Merged frames {indices} -> frame {indices[0]}.")
             self.selected_frames.clear()
@@ -741,6 +946,7 @@ class SpriteGUI:
             return
         idx = next(iter(self.selected_frames))
         try:
+            import json as _json
             from extract_sprites import cmd_split, load_metadata
             meta = load_metadata(self.selected_anim)
             frame_meta = next(
@@ -748,7 +954,8 @@ class SpriteGUI:
             if frame_meta is None:
                 messagebox.showerror("Split", f"Frame {idx} not found in frames.json.")
                 return
-            n_blobs = len(frame_meta["blobs"])
+            blobs = frame_meta.get("blobs", [])
+            n_blobs = len(blobs)
             if n_blobs < 2:
                 messagebox.showinfo(
                     "Split",
@@ -756,7 +963,21 @@ class SpriteGUI:
                     "Use Merge to combine frames first if they were stitched "
                     "from multiple separate blobs.")
                 return
-            cmd_split(self.selected_anim, idx, split_x=None)
+            snap = _snapshot_anim_dir(self.selected_anim)
+            path = self.selected_anim
+
+            # If blobs were detected from the modified PNG (after transparency
+            # replacement) rather than from the original sprite sheet, we crop
+            # directly from the current PNG instead of re-rendering from the sheet.
+            if blobs and blobs[0].get("png_local"):
+                self._split_frame_from_png(self.selected_anim, frame_meta, meta)
+            else:
+                cmd_split(self.selected_anim, idx, split_x=None)
+
+            def _undo_split(p=path, s=snap):
+                _restore_anim_dir(p, s)
+                self._select_anim_by_path(p)
+            self._push_undo(f"Split frame {idx} in '{path.name}'", _undo_split)
             self._mark_dirty()
             self._set_status(f"Split frame {idx} into {n_blobs} frames.")
             self.selected_frames.clear()
@@ -764,6 +985,55 @@ class SpriteGUI:
             self._load_frames(self.selected_anim)
         except Exception as exc:
             messagebox.showerror("Split Error", str(exc))
+
+    def _split_frame_from_png(self, anim_dir: Path, frame_meta: dict, meta: dict):
+        """Split a frame using PNG-local blob coords (set after transparency replacement).
+
+        Crops each blob region from the current PNG and inserts them as new frames,
+        replacing the original frame entry.
+        """
+        import json as _json
+
+        blobs    = frame_meta["blobs"]   # list of {x0,y0,x1,y1, png_local:True}
+        src_file = anim_dir / frame_meta["file"]
+        src_img  = Image.open(src_file).convert("RGBA")
+        src_idx  = frame_meta["index"]
+
+        # Build list of all other frames (not the one being split)
+        other_frames = [f for f in meta["frames"] if f["index"] != src_idx]
+
+        # Find a gap in the index space large enough to fit N new frames.
+        # Simplest: assign new indices starting from max_existing + 1.
+        max_idx = max((f["index"] for f in meta["frames"]), default=0)
+
+        new_frames_meta = []
+        for i, blob in enumerate(blobs):
+            x0, y0, x1, y1 = blob["x0"], blob["y0"], blob["x1"], blob["y1"]
+            region = src_img.crop((x0, y0, x1, y1))
+            new_idx  = max_idx + 1 + i
+            new_file = f"{new_idx:03d}.png"
+            region.save(anim_dir / new_file)
+            new_frames_meta.append({
+                "index": new_idx,
+                "file":  new_file,
+                "blobs": [{"x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                            "png_local": True}],
+            })
+
+        # Remove the source file and update frames.json
+        src_file.unlink(missing_ok=True)
+        meta["frames"] = other_frames + new_frames_meta
+        # Re-number sequentially so indices stay compact
+        meta["frames"].sort(key=lambda f: f["index"])
+        for i, f in enumerate(meta["frames"]):
+            old_file = anim_dir / f["file"]
+            new_file = anim_dir / f"{i:03d}.png"
+            if old_file != new_file:
+                old_file.rename(new_file)
+            f["index"] = i
+            f["file"]  = f"{i:03d}.png"
+        (anim_dir / "frames.json").write_text(
+            _json.dumps(meta, indent=2), encoding="utf-8")
 
     def _delete_selected_frames(self):
         if not self.selected_anim or not self.selected_frames:
@@ -777,7 +1047,13 @@ class SpriteGUI:
                 icon="warning"):
             return
         try:
+            snap = _snapshot_anim_dir(self.selected_anim)
+            path = self.selected_anim
             _cmd_delete_frames(self.selected_anim, set(indices))
+            def _undo_del_frames(p=path, s=snap):
+                _restore_anim_dir(p, s)
+                self._select_anim_by_path(p)
+            self._push_undo(f"Delete frame(s) {indices} in '{path.name}'", _undo_del_frames)
             self._mark_dirty()
             self._set_status(f"Deleted {n} frame(s).")
             self.selected_frames.clear()
@@ -794,7 +1070,13 @@ class SpriteGUI:
             return
         idx = next(iter(self.selected_frames))
         try:
+            snap = _snapshot_anim_dir(self.selected_anim)
+            path = self.selected_anim
             _cmd_duplicate_frame(self.selected_anim, idx)
+            def _undo_dup_frame(p=path, s=snap):
+                _restore_anim_dir(p, s)
+                self._select_anim_by_path(p)
+            self._push_undo(f"Duplicate frame {idx} in '{path.name}'", _undo_dup_frame)
             self._mark_dirty()
             self._set_status(f"Duplicated frame {idx} to end.")
             self.selected_frames.clear()
@@ -818,6 +1100,581 @@ class SpriteGUI:
                 widget.destroy()
         except Exception:
             pass
+
+    # ── project palette panel ─────────────────────────────────────────────────
+
+    _PAL_MAX = 512   # max distinct colors collected
+
+    _PAL_COL_H    = 170  # px: height of expanded collapsible frame list
+    _PAL_THUMB_W  = 44   # px: thumbnail width inside frame list
+
+    def _build_palette_panel(self, parent: tk.Widget):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)   # vpane row expands
+
+        # ── row 0: header + dial (fixed height) ───────────────────────────────
+        top_ctrl = tk.Frame(parent, bg=BG_PANEL)
+        top_ctrl.grid(row=0, column=0, sticky=tk.EW)
+        top_ctrl.columnconfigure(0, weight=1)
+
+        hdr = tk.Frame(top_ctrl, bg=BG_PANEL, pady=4)
+        hdr.grid(row=0, column=0, sticky=tk.EW)
+        tk.Label(hdr, text="Palette", bg=BG_PANEL, fg=ACCENT,
+                 font=("", 10, "bold")).pack(side=tk.LEFT, padx=8)
+        self._pal_count_lbl = tk.Label(hdr, text="", bg=BG_PANEL,
+                                       fg=FG_DIM, font=("", 8))
+        self._pal_count_lbl.pack(side=tk.LEFT)
+
+        dial_row = tk.Frame(top_ctrl, bg=BG_PANEL)
+        dial_row.grid(row=1, column=0, sticky=tk.EW, padx=6, pady=(0, 2))
+        tk.Label(dial_row, text="Colors", bg=BG_PANEL, fg=FG_DIM,
+                 font=("", 8)).pack(side=tk.LEFT)
+        self._pal_n_lbl = tk.Label(dial_row, text="16", bg=BG_PANEL,
+                                   fg=FG, font=("Consolas", 8), width=4,
+                                   anchor=tk.E)
+        self._pal_n_lbl.pack(side=tk.RIGHT)
+        tk.Scale(dial_row, variable=self._pal_n_colors,
+                 from_=1, to=256,
+                 orient=tk.HORIZONTAL, showvalue=False,
+                 command=lambda _: self._pal_on_scale(),
+                 bg=BG_PANEL, fg=FG, troughcolor=BG_CARD,
+                 highlightthickness=0, relief=tk.FLAT,
+                 ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        self._pal_hover_label = tk.Label(top_ctrl, text="", bg=BG_PANEL,
+                                         fg=FG_DIM, font=("Consolas", 7),
+                                         anchor=tk.W)
+        self._pal_hover_label.grid(row=2, column=0, sticky=tk.EW,
+                                   padx=4, pady=(0, 2))
+
+        # ── row 1: vertical pane — swatches (top) | frames (bottom) ───────────
+        vpane = tk.PanedWindow(parent, orient=tk.VERTICAL,
+                               bg=BG, sashwidth=5, sashrelief=tk.FLAT,
+                               sashpad=1)
+        vpane.grid(row=1, column=0, sticky=tk.NSEW)
+
+        # ── top pane: swatch grid ─────────────────────────────────────────────
+        sw_frame = tk.Frame(vpane, bg=BG_PANEL)
+        sw_frame.rowconfigure(0, weight=1)
+        sw_frame.columnconfigure(0, weight=1)
+        vpane.add(sw_frame, minsize=60)
+
+        vsb = tk.Scrollbar(sw_frame, orient=tk.VERTICAL,
+                           bg=BG_CARD, troughcolor=BG_PANEL, relief=tk.FLAT)
+        vsb.grid(row=0, column=1, sticky=tk.NS)
+        self._pal_canvas = tk.Canvas(sw_frame, bg=BG_PANEL,
+                                     highlightthickness=0,
+                                     yscrollcommand=vsb.set)
+        self._pal_canvas.grid(row=0, column=0, sticky=tk.NSEW)
+        vsb.config(command=self._pal_canvas.yview)
+
+        self._pal_canvas.bind("<Configure>",  lambda _: self._pal_redraw())
+        self._pal_canvas.bind("<MouseWheel>",
+                              lambda e: self._pal_canvas.yview_scroll(
+                                  int(-1 * (e.delta / 120)), "units"))
+        self._pal_canvas.bind("<Motion>",    self._pal_on_hover)
+        self._pal_canvas.bind("<Leave>",     lambda _: self._pal_hover_update(""))
+        self._pal_canvas.bind("<Button-1>",  self._pal_click)
+        self._pal_canvas.bind("<Button-3>",  self._pal_right_click)
+
+        # ── bottom pane: frames with selected color ───────────────────────────
+        col_frame = tk.Frame(vpane, bg=BG_PANEL)
+        col_frame.rowconfigure(1, weight=1)
+        col_frame.columnconfigure(0, weight=1)
+        vpane.add(col_frame, minsize=60)
+
+        col_hdr = tk.Frame(col_frame, bg=BG_PANEL, pady=2)
+        col_hdr.grid(row=0, column=0, columnspan=2, sticky=tk.EW)
+        self._pal_col_hdr_lbl = tk.Label(col_hdr, text="Frames",
+                                          bg=BG_PANEL, fg=ACCENT,
+                                          font=("", 9, "bold"), anchor=tk.W)
+        self._pal_col_hdr_lbl.pack(side=tk.LEFT, padx=6)
+
+        col_vsb = tk.Scrollbar(col_frame, orient=tk.VERTICAL,
+                               bg=BG_CARD, troughcolor=BG_PANEL, relief=tk.FLAT)
+        col_vsb.grid(row=1, column=1, sticky=tk.NS)
+        self._pal_col_canvas = tk.Canvas(col_frame, bg=BG_CARD,
+                                         highlightthickness=0,
+                                         yscrollcommand=col_vsb.set)
+        self._pal_col_canvas.grid(row=1, column=0, sticky=tk.NSEW)
+        col_vsb.config(command=self._pal_col_canvas.yview)
+        self._pal_col_canvas.bind("<MouseWheel>",
+                                  lambda e: self._pal_col_canvas.yview_scroll(
+                                      int(-1 * (e.delta / 120)), "units"))
+        self._pal_col_canvas.bind("<Button-1>", self._pal_col_frame_click)
+
+        # Show placeholder text in the frames pane
+        self.root.after(50, self._pal_col_show_placeholder)
+
+    def _refresh_palette(self):
+        """Recompute palette from all frames (runs in background thread)."""
+        anim_dirs = list(self._anim_dirs)
+
+        def _compute():
+            try:
+                import numpy as np
+                from collections import Counter
+                counts: Counter = Counter()
+                for anim_dir in anim_dirs:
+                    for png in sorted(anim_dir.glob("*.png")):
+                        try:
+                            img = Image.open(png).convert("RGBA")
+                            arr = np.array(img)
+                            mask = arr[:, :, 3] > 128
+                            if not mask.any():
+                                continue
+                            rgb = arr[mask, :3].astype(np.uint32)
+                            packed = (rgb[:, 0] << 16) | (rgb[:, 1] << 8) | rgb[:, 2]
+                            vals, cnts = np.unique(packed, return_counts=True)
+                            for v, c in zip(vals.tolist(), cnts.tolist()):
+                                counts[v] += c
+                        except Exception:
+                            pass
+                top = counts.most_common(self._PAL_MAX)
+                colors = [((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF, c)
+                          for v, c in top]
+                self.root.after(0, lambda cl=colors: self._pal_set(cl))
+            except Exception:
+                pass
+
+        threading.Thread(target=_compute, daemon=True).start()
+
+    def _pal_set(self, colors: list):
+        self._pal_colors = colors
+        self._pal_selected_idx = None
+        if self._pal_col_hdr_lbl and self._pal_col_hdr_lbl.winfo_exists():
+            self._pal_col_hdr_lbl.config(text="Frames", fg=ACCENT)
+        self._pal_col_show_placeholder()
+        self._pal_redraw()
+
+    def _pal_on_scale(self):
+        n = self._pal_n_colors.get()
+        if self._pal_n_lbl and self._pal_n_lbl.winfo_exists():
+            self._pal_n_lbl.config(text=str(n))
+        self._pal_redraw()
+
+    def _pal_hover_update(self, text: str):
+        if self._pal_hover_label and self._pal_hover_label.winfo_exists():
+            self._pal_hover_label.config(text=text)
+
+    def _pal_event_to_idx(self, event) -> int | None:
+        """Return the palette color index under the mouse, or None."""
+        canvas = self._pal_canvas
+        if not self._pal_colors or canvas is None:
+            return None
+        cw = canvas.winfo_width()
+        if cw == 0:
+            return None
+        n_show = min(self._pal_n_colors.get(), len(self._pal_colors))
+        cols = max(1, self._PAL_SWATCH_COLS)
+        sz   = cw // cols
+        if sz == 0:
+            return None
+        cy  = int(canvas.canvasy(event.y))
+        col = event.x // sz
+        row = cy // sz
+        idx = row * cols + col
+        if 0 <= col < cols and 0 <= idx < n_show:
+            return idx
+        return None
+
+    def _pal_on_hover(self, event):
+        idx = self._pal_event_to_idx(event)
+        if idx is not None:
+            r, g, b, count = self._pal_colors[idx]
+            self._pal_hover_update(f"#{r:02x}{g:02x}{b:02x}  {count:,}")
+        else:
+            self._pal_hover_update("")
+
+    def _pal_click(self, event):
+        idx = self._pal_event_to_idx(event)
+        if idx is None:
+            return
+        self._pal_selected_idx = idx
+        self._pal_redraw()
+        self._pal_load_color_frames()
+
+    def _pal_right_click(self, event):
+        idx = self._pal_event_to_idx(event)
+        if idx is None:
+            return
+        self._pal_selected_idx = idx
+        self._pal_redraw()
+        self._pal_load_color_frames()
+        r, g, b, _ = self._pal_colors[idx]
+        hex_col = f"#{r:02x}{g:02x}{b:02x}"
+        menu = tk.Menu(self.root, tearoff=False,
+                       bg=BG_PANEL, fg=FG,
+                       activebackground=BG_SEL, activeforeground=ACCENT,
+                       relief=tk.FLAT, borderwidth=1)
+        menu.add_command(
+            label=f"Replace {hex_col}…",
+            command=lambda: self._pal_replace_color(r, g, b))
+        menu.add_command(
+            label=f"Replace {hex_col} with Transparency",
+            command=lambda: self._pal_replace_transparent(r, g, b))
+        menu.post(event.x_root, event.y_root)
+
+    def _pal_replace_color(self, old_r: int, old_g: int, old_b: int):
+        from tkinter.colorchooser import askcolor
+        init = f"#{old_r:02x}{old_g:02x}{old_b:02x}"
+        result = askcolor(color=init,
+                          title=f"Replace {init} with…",
+                          parent=self.root)
+        if result is None or result[0] is None:
+            return
+        new_r, new_g, new_b = (int(x) for x in result[0])
+        if (new_r, new_g, new_b) == (old_r, old_g, old_b):
+            return
+
+        anim_dirs = list(self._anim_dirs)
+        self._set_status(f"Replacing {init}…")
+
+        def do_replace():
+            import numpy as np
+            # Collect which dirs are actually affected (for snapshots / undo)
+            affected: list[tuple[Path, dict]] = []
+            for anim_dir in anim_dirs:
+                pngs = sorted(anim_dir.glob("*.png"))
+                dir_snap = None
+                for png in pngs:
+                    try:
+                        img = Image.open(png).convert("RGBA")
+                        arr = np.array(img)
+                        mask = ((arr[:, :, 3] > 128) &
+                                (arr[:, :, 0] == old_r) &
+                                (arr[:, :, 1] == old_g) &
+                                (arr[:, :, 2] == old_b))
+                        if not mask.any():
+                            continue
+                        if dir_snap is None:
+                            dir_snap = _snapshot_anim_dir(anim_dir)
+                        arr[mask, 0] = new_r
+                        arr[mask, 1] = new_g
+                        arr[mask, 2] = new_b
+                        Image.fromarray(arr).save(png)
+                    except Exception:
+                        pass
+                if dir_snap is not None:
+                    affected.append((anim_dir, dir_snap))
+
+            def on_done():
+                if not affected:
+                    self._set_status(f"No pixels matched {init}.")
+                    return
+                # Push undo for all affected dirs together
+                def _undo(af=affected):
+                    for p, s in af:
+                        _restore_anim_dir(p, s)
+                    self._load_frames(self.selected_anim) \
+                        if self.selected_anim else None
+                    self._refresh_palette()
+                new_hex = f"#{new_r:02x}{new_g:02x}{new_b:02x}"
+                self._push_undo(f"Replace {init} → {new_hex}", _undo)
+                self._mark_dirty()
+                self._pal_selected_idx = None
+                self._pal_load_color_frames()
+                if self.selected_anim:
+                    self._load_frames(self.selected_anim)
+                self._refresh_palette()
+                self._set_status(
+                    f"Replaced {init} → {new_hex} in {len(affected)} animation(s).")
+            self.root.after(0, on_done)
+
+        threading.Thread(target=do_replace, daemon=True).start()
+
+    def _pal_replace_transparent(self, old_r: int, old_g: int, old_b: int):
+        """Replace every pixel of `old_r,g,b` with transparency across all frames.
+
+        After erasing, re-detect blobs in each modified PNG and update frames.json
+        so the Split button can immediately separate the newly disconnected regions.
+        Blobs detected this way are stored with ``"png_local": true`` so the split
+        logic knows to crop from the current PNG rather than re-render from the
+        original sprite sheet.
+        """
+        import json as _json
+        import numpy as _np
+
+        init     = f"#{old_r:02x}{old_g:02x}{old_b:02x}"
+        anim_dirs = list(self._anim_dirs)
+        self._set_status(f"Replacing {init} with transparency…")
+
+        def _detect_blobs_in_png(png_path: Path) -> list[dict]:
+            """Column-scan the PNG alpha channel; return PNG-local blob rects."""
+            arr   = _np.array(Image.open(png_path).convert("RGBA"))
+            alpha = arr[:, :, 3]
+            col_has_fg = (alpha > 0).any(axis=0)
+            blobs, in_b, sx = [], False, 0
+            for cx, fg in enumerate(col_has_fg):
+                if fg and not in_b:
+                    sx, in_b = cx, True
+                elif not fg and in_b:
+                    rows = _np.where(alpha[:, sx:cx].any(axis=1))[0]
+                    if rows.size:
+                        blobs.append({"x0": sx, "y0": int(rows[0]),
+                                      "x1": cx, "y1": int(rows[-1] + 1),
+                                      "png_local": True})
+                    in_b = False
+            if in_b:
+                rows = _np.where(alpha[:, sx:].any(axis=1))[0]
+                if rows.size:
+                    blobs.append({"x0": sx, "y0": int(rows[0]),
+                                  "x1": int(alpha.shape[1]), "y1": int(rows[-1] + 1),
+                                  "png_local": True})
+            return blobs
+
+        def do_replace():
+            affected: list[tuple[Path, dict]] = []
+
+            for anim_dir in anim_dirs:
+                meta_path = anim_dir / "frames.json"
+                if not meta_path.exists():
+                    continue
+                try:
+                    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+
+                pngs = sorted(anim_dir.glob("*.png"))
+                dir_snap = None
+                meta_changed = False
+
+                for png in pngs:
+                    try:
+                        img = Image.open(png).convert("RGBA")
+                        arr = _np.array(img)
+                        mask = ((arr[:, :, 3] > 128) &
+                                (arr[:, :, 0] == old_r) &
+                                (arr[:, :, 1] == old_g) &
+                                (arr[:, :, 2] == old_b))
+                        if not mask.any():
+                            continue
+                        if dir_snap is None:
+                            dir_snap = _snapshot_anim_dir(anim_dir)
+                        arr[mask, 3] = 0       # erase alpha
+                        arr[mask, 0] = 0
+                        arr[mask, 1] = 0
+                        arr[mask, 2] = 0
+                        Image.fromarray(arr).save(png)
+
+                        # Re-detect blobs in the now-modified PNG
+                        new_blobs = _detect_blobs_in_png(png)
+                        # Update frames.json entry for this PNG
+                        stem = png.stem
+                        for fm in meta["frames"]:
+                            if Path(fm["file"]).stem == stem:
+                                fm["blobs"] = new_blobs
+                                meta_changed = True
+                                break
+                    except Exception:
+                        pass
+
+                if dir_snap is not None:
+                    if meta_changed:
+                        meta_path.write_text(
+                            _json.dumps(meta, indent=2), encoding="utf-8")
+                    affected.append((anim_dir, dir_snap))
+
+            def on_done():
+                if not affected:
+                    self._set_status(f"No pixels matched {init}.")
+                    return
+                def _undo(af=affected):
+                    for p, s in af:
+                        _restore_anim_dir(p, s)
+                    if self.selected_anim:
+                        self._load_frames(self.selected_anim)
+                    self._refresh_palette()
+                self._push_undo(f"Replace {init} → transparent", _undo)
+                self._mark_dirty()
+                self._pal_selected_idx = None
+                self._pal_load_color_frames()
+                if self.selected_anim:
+                    self._load_frames(self.selected_anim)
+                self._refresh_palette()
+                self._set_status(
+                    f"Replaced {init} with transparency in {len(affected)} animation(s)."
+                    "  Frames with multiple regions can now be Split.")
+            self.root.after(0, on_done)
+
+        threading.Thread(target=do_replace, daemon=True).start()
+
+    # ── color frames section ──────────────────────────────────────────────────
+
+    def _pal_col_show_placeholder(self):
+        canvas = self._pal_col_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        self._pal_col_img_refs.clear()
+        cw = canvas.winfo_width() or (self._PAL_PANEL_W - 16)
+        canvas.create_text(cw // 2, 20,
+                           text="Click a swatch\nto see frames",
+                           fill=FG_DIM, font=("", 8), justify=tk.CENTER)
+        canvas.configure(scrollregion=(0, 0, cw, 40))
+
+    def _pal_load_color_frames(self):
+        """Find all frames containing the selected color (background thread)."""
+        if self._pal_selected_idx is None or not self._pal_colors:
+            return
+        r, g, b, _ = self._pal_colors[self._pal_selected_idx]
+        hex_col = f"#{r:02x}{g:02x}{b:02x}"
+
+        if self._pal_col_hdr_lbl and self._pal_col_hdr_lbl.winfo_exists():
+            self._pal_col_hdr_lbl.config(text=f"Frames  {hex_col}", fg=ACCENT)
+
+        if self._pal_col_canvas and self._pal_col_canvas.winfo_exists():
+            self._pal_col_canvas.delete("all")
+            cw = self._pal_col_canvas.winfo_width() or (self._PAL_PANEL_W - 16)
+            self._pal_col_canvas.create_text(
+                cw // 2, 20, text="Searching…", fill=FG_DIM, font=("", 8))
+
+        anim_dirs = list(self._anim_dirs)
+
+        def find():
+            import numpy as np
+            matches: list[tuple[str, Path]] = []  # (anim_name, png_path)
+            for anim_dir in anim_dirs:
+                for png in sorted(anim_dir.glob("*.png")):
+                    try:
+                        img = Image.open(png).convert("RGBA")
+                        arr = np.array(img)
+                        hit = ((arr[:, :, 3] > 128) &
+                               (arr[:, :, 0] == r) &
+                               (arr[:, :, 1] == g) &
+                               (arr[:, :, 2] == b))
+                        if hit.any():
+                            matches.append((anim_dir.name, png))
+                    except Exception:
+                        pass
+            self.root.after(
+                0, lambda m=matches: self._pal_show_color_frames(m, r, g, b))
+
+        threading.Thread(target=find, daemon=True).start()
+
+    def _pal_show_color_frames(self, matches: list, r: int, g: int, b: int):
+        canvas = self._pal_col_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        self._pal_col_img_refs.clear()
+
+        hex_col = f"#{r:02x}{g:02x}{b:02x}"
+        n = len(matches)
+        if self._pal_col_hdr_lbl and self._pal_col_hdr_lbl.winfo_exists():
+            self._pal_col_hdr_lbl.config(
+                text=f"Frames  {hex_col}  ({n})", fg=ACCENT)
+
+        if not matches:
+            cw = canvas.winfo_width() or self._PAL_PANEL_W
+            canvas.create_text(cw // 2, 20,
+                               text="No frames found", fill=FG_DIM, font=("", 8))
+            canvas.configure(scrollregion=(0, 0, cw, 40))
+            return
+
+        cw      = canvas.winfo_width() or (self._PAL_PANEL_W - 16)
+        tw      = self._PAL_THUMB_W
+        row_h   = tw + 4          # square thumb + gap
+        text_x  = tw + 6
+        text_w  = max(cw - tw - 8, 20)
+
+        # Panel BG colour for alpha compositing
+        panel_rgb = tuple(
+            int(BG_CARD.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+
+        for i, (anim_name, png_path) in enumerate(matches):
+            y0 = i * row_h
+            try:
+                img = Image.open(png_path).convert("RGBA")
+                scale = tw / max(img.width, img.height)
+                nw = max(1, round(img.width  * scale))
+                nh = max(1, round(img.height * scale))
+                img = img.resize((nw, nh), Image.NEAREST)
+                bg  = Image.new("RGBA", (nw, nh), (*panel_rgb, 255))
+                composite = Image.alpha_composite(bg, img)
+                photo = ImageTk.PhotoImage(composite)
+                self._pal_col_img_refs.append(photo)
+                canvas.create_image(2, y0 + 2, image=photo, anchor=tk.NW,
+                                    tags=(f"frame_{i}",))
+            except Exception:
+                self._pal_col_img_refs.append(None)
+
+            frame_num = png_path.stem
+            # Truncate anim name to fit
+            short_name = (anim_name[:10] + "…") if len(anim_name) > 11 else anim_name
+            canvas.create_text(text_x, y0 + 4,
+                               text=short_name,
+                               fill=FG, font=("Consolas", 7),
+                               anchor=tk.NW, width=text_w,
+                               tags=(f"frame_{i}",))
+            canvas.create_text(text_x, y0 + 14,
+                               text=frame_num,
+                               fill=FG_DIM, font=("Consolas", 7),
+                               anchor=tk.NW,
+                               tags=(f"frame_{i}",))
+
+        # Store match list for click handler
+        self._pal_col_matches = matches
+        canvas.configure(scrollregion=(0, 0, cw, n * row_h))
+
+    def _pal_col_frame_click(self, event):
+        """Navigate to the animation whose frame was clicked in the list."""
+        canvas = self._pal_col_canvas
+        if canvas is None or not hasattr(self, "_pal_col_matches"):
+            return
+        cw = canvas.winfo_width() or self._PAL_PANEL_W
+        row_h = self._PAL_THUMB_W + 4
+        cy  = int(canvas.canvasy(event.y))
+        idx = cy // row_h
+        if 0 <= idx < len(self._pal_col_matches):
+            anim_name, png_path = self._pal_col_matches[idx]
+            anim_dir = png_path.parent
+            self._select_anim_by_path(anim_dir)
+
+    def _pal_redraw(self):
+        canvas = self._pal_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+
+        n_show = min(self._pal_n_colors.get(), len(self._pal_colors))
+
+        if self._pal_n_lbl and self._pal_n_lbl.winfo_exists():
+            self._pal_n_lbl.config(text=str(self._pal_n_colors.get()))
+        if self._pal_count_lbl and self._pal_count_lbl.winfo_exists():
+            total = len(self._pal_colors)
+            self._pal_count_lbl.config(
+                text=f"{n_show}/{total}" if total else "")
+
+        if not n_show:
+            cw = canvas.winfo_width() or self._PAL_PANEL_W
+            canvas.create_text(cw // 2, 24,
+                               text="No data", fill=FG_DIM, font=("", 9))
+            canvas.configure(scrollregion=(0, 0, cw, 48))
+            return
+
+        cw   = canvas.winfo_width() or self._PAL_PANEL_W
+        cols = max(1, self._PAL_SWATCH_COLS)
+        sz   = cw // cols    # square side length
+        sel  = self._pal_selected_idx
+
+        for i in range(n_show):
+            r, g, b, _ = self._pal_colors[i]
+            row = i // cols
+            col = i % cols
+            x0  = col * sz
+            y0  = row * sz
+            canvas.create_rectangle(x0, y0, x0 + sz, y0 + sz,
+                                    fill=f"#{r:02x}{g:02x}{b:02x}",
+                                    outline="")
+            if i == sel:
+                # White selection ring (2 px inset)
+                canvas.create_rectangle(x0 + 2, y0 + 2,
+                                        x0 + sz - 2, y0 + sz - 2,
+                                        fill="", outline="#ffffff", width=2)
+
+        rows = (n_show + cols - 1) // cols
+        canvas.configure(scrollregion=(0, 0, cw, rows * sz))
 
     def _build_preview_panel(self, parent: tk.Widget):
         """Build (or rebuild) the preview panel inside *parent*."""
@@ -1077,7 +1934,13 @@ class SpriteGUI:
         self._drag_cancel()
         if src is not None and dst is not None and dst != src and dst != src + 1:
             try:
+                snap = _snapshot_anim_dir(self.selected_anim)
+                path = self.selected_anim
                 _cmd_reorder_frames(self.selected_anim, src, dst)
+                def _undo_reorder(p=path, s=snap):
+                    _restore_anim_dir(p, s)
+                    self._select_anim_by_path(p)
+                self._push_undo(f"Reorder frames in '{path.name}'", _undo_reorder)
                 self._mark_dirty()
                 self._set_status(f"Moved frame {src} to position {dst}.")
                 self.selected_frames.clear()
@@ -1139,14 +2002,63 @@ class SpriteGUI:
         self.anim_list.selection_clear(0, tk.END)
         self.anim_list.selection_set(idx)
         self._on_anim_select()
-        menu = self._context_menu([
+        is_flagged = (self.selected_anim is not None and
+                      self.selected_anim.name in self._flagged_anims)
+        items = [
             ("Rename…",         self._rename_folder),
             ("Duplicate",       self._duplicate_anim),
-            ("Open in Compose", self._open_compose),
+            ("Open in Compose", lambda: self._open_compose(self.selected_anim)),
             None,
-            ("Delete",          self._delete_anim),
-        ])
+        ]
+        if is_flagged:
+            items += [
+                ("Mark as Valid",       self._mark_valid_anim),
+                ("Delete (false pos.)", self._delete_anim_no_confirm),
+            ]
+        else:
+            items.append(("Delete", self._delete_anim))
+        menu = self._context_menu(items)
         menu.post(event.x_root, event.y_root)
+
+    def _mark_valid_anim(self):
+        if not self.selected_anim:
+            return
+        name = self.selected_anim.name
+        self._flagged_anims.discard(name)
+        # restore normal colour in listbox
+        for i, d in enumerate(self._anim_dirs):
+            if d.name == name:
+                self.anim_list.itemconfig(i, fg=FG)
+                break
+        self._mark_dirty()
+        self._set_status(f"'{name}' marked as valid.")
+
+    def _delete_anim_no_confirm(self):
+        """Delete a (flagged) animation without asking for confirmation."""
+        if not self.selected_anim:
+            return
+        name = self.selected_anim.name
+        snap = _snapshot_anim_dir(self.selected_anim)
+        path = self.selected_anim
+        shutil.rmtree(self.selected_anim)
+        self._flagged_anims.discard(name)
+        self.selected_anim = None
+        self.selected_frames.clear()
+        self._last_clicked = None
+        self.lbl_anim.config(text="")
+        self.lbl_sel.config(text="")
+        for w in self.frame_holder.winfo_children():
+            w.destroy()
+        self._frame_images.clear()
+        self._frame_cells.clear()
+        def _undo_del(p=path, s=snap, n=name):
+            _restore_anim_dir(p, s)
+            self._flagged_anims.add(n)
+            self._select_anim_by_path(p)
+        self._push_undo(f"Delete '{name}'", _undo_del)
+        self._mark_dirty()
+        self._load_output()
+        self._set_status(f"Deleted '{name}'.")
 
     def _frame_right_click(self, event, idx: int):
         if idx not in self.selected_frames:
@@ -1156,6 +2068,8 @@ class SpriteGUI:
             self._update_sel_label()
         n = len(self.selected_frames)
         menu = self._context_menu([
+            ("Edit Frame…",           lambda i=idx: self._open_frame_edit(i), n == 1),
+            None,
             ("Split",                self._split_frame,            n == 1),
             (f"Merge {n} frames",    self._merge_frames,           n >= 2),
             ("Duplicate",            self._duplicate_frame,        n == 1),
@@ -1163,3 +2077,49 @@ class SpriteGUI:
             (f"Delete {n} frame(s)", self._delete_selected_frames, True),
         ])
         menu.post(event.x_root, event.y_root)
+
+    def _open_frame_edit(self, frame_idx: int):
+        if not self.selected_anim:
+            return
+        pngs = sorted(self.selected_anim.glob("*.png"))
+        if frame_idx >= len(pngs):
+            return
+        frame_path = pngs[frame_idx]
+        anim_dir   = self.selected_anim
+
+        def on_save(result_img: Image.Image, replace: bool):
+            import json
+            snap = _snapshot_anim_dir(anim_dir)
+
+            meta_path = anim_dir / "frames.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+            if replace:
+                result_img.save(frame_path)
+                op = f"Edit (replace) frame {frame_idx}"
+            else:
+                # Append as new frame at end, copying blob metadata from source
+                new_idx = max(f["index"] for f in meta["frames"]) + 1
+                new_file = f"{new_idx:03d}.png"
+                result_img.save(anim_dir / new_file)
+                src_frame = next(
+                    (f for f in meta["frames"] if f["index"] == frame_idx), None)
+                meta["frames"].append({
+                    "index": new_idx,
+                    "file":  new_file,
+                    "blobs": src_frame["blobs"] if src_frame else [],
+                })
+                meta_path.write_text(
+                    json.dumps(meta, indent=2), encoding="utf-8")
+                op = f"Edit (new) from frame {frame_idx}"
+
+            def _undo(p=anim_dir, s=snap):
+                _restore_anim_dir(p, s)
+                self._select_anim_by_path(p)
+
+            self._push_undo(op, _undo)
+            self._mark_dirty()
+            self._load_frames(anim_dir)
+
+        from frame_edit_window import FrameEditWindow
+        FrameEditWindow(self.root, frame_path, on_save)

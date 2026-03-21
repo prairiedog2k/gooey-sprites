@@ -14,7 +14,9 @@ def _read_project(path: Path) -> dict:
 
 
 def _write_project(path: Path, gif: str, output: str, gap: int, tol: int,
-                   animations: list[str] | None = None):
+                   animations: list[str] | None = None,
+                   min_pixels: int = 100,
+                   flagged_animations: list[str] | None = None):
     # Store paths relative to the project file so the folder can be moved.
     proj_dir = path.parent
 
@@ -30,7 +32,9 @@ def _write_project(path: Path, gif: str, output: str, gap: int, tol: int,
         "output":     _rel(output) if output else "",
         "gap":        gap,
         "tol":        tol,
-        "animations": animations or [],
+        "min_pixels":          min_pixels,
+        "animations":          animations or [],
+        "flagged_animations":  flagged_animations or [],
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 

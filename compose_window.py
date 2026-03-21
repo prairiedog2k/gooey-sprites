@@ -19,7 +19,7 @@ Interactions
 • Click source frame       → append to end of timeline.
 • Drag source frame        → insert at timeline position.
 • Click timeline frame     → toggle selection.
-• Right-click timeline     → Duplicate / Rotate / Skew / Remove / Move.
+• Right-click timeline     → Duplicate / Rotate / Remove / Move.
 • Drag timeline frame      → reorder.
 """
 
@@ -43,7 +43,6 @@ from dialogs import _InputDialog
 
 class ComposeWindow:
     _DRAG_THRESHOLD = 8   # px of movement before a click becomes a drag
-    _SKEW_PRESETS   = (-30, -15, 15, 30)
 
     def __init__(self, parent: tk.Tk, output_dir: Path, on_save,
                  initial_anim: Path | None = None):
@@ -54,6 +53,7 @@ class ComposeWindow:
         # Timeline state
         self._items:  list[_CItem] = []
         self._tl_sel: set[int]     = set()
+        self._edit_counter: int    = 0   # unique id for compose-edit temp PNGs
 
         # Photo-image caches (keep refs to prevent GC)
         self._src_photos: dict[Path, ImageTk.PhotoImage] = {}
@@ -382,8 +382,6 @@ class ComposeWindow:
             badge = []
             if item.rotate:
                 badge.append(f"{item.rotate}°")
-            if item.skew_x:
-                badge.append(f"sk{item.skew_x:+.0f}°")
 
             img_lbl = tk.Label(card, image=photo, bg=BG_CARD,
                                relief=tk.FLAT, borderwidth=2, cursor="hand2")
@@ -463,6 +461,8 @@ class ComposeWindow:
         menu = tk.Menu(self._win, tearoff=False, bg=BG_CARD, fg=FG,
                        activebackground=BG_SEL, activeforeground=ACCENT)
 
+        menu.add_command(label="Edit Frame…",
+                         command=lambda: self._tl_edit_frame(idx))
         menu.add_command(label="Duplicate",
                          command=lambda: self._tl_duplicate(idx))
         menu.add_separator()
@@ -480,21 +480,6 @@ class ComposeWindow:
         rot_menu.add_command(label="Reset rotation",
                              command=lambda: self._tl_set_rotate(idx, 0))
         menu.add_cascade(label="Rotate", menu=rot_menu)
-
-        # ── Skew ─────────────────────────────────────────────────────────────
-        skew_menu = tk.Menu(menu, tearoff=False, bg=BG_CARD, fg=FG,
-                            activebackground=BG_SEL, activeforeground=ACCENT)
-        for deg in self._SKEW_PRESETS:
-            skew_menu.add_command(
-                label=f"{deg:+d}°",
-                command=lambda d=deg: self._tl_set_skew(idx, d))
-        skew_menu.add_separator()
-        skew_menu.add_command(label="Custom…",
-                              command=lambda: self._tl_skew_custom(idx))
-        skew_menu.add_command(label="Reset skew",
-                              command=lambda: self._tl_set_skew(idx, 0.0))
-        menu.add_cascade(label=f"Skew  (now {item.skew_x:+.0f}°)", menu=skew_menu)
-
         menu.add_separator()
         if idx > 0:
             menu.add_command(label="Move Left",
@@ -515,6 +500,38 @@ class ComposeWindow:
         self._items.insert(idx + 1, self._items[idx].copy())
         self._rebuild_timeline()
 
+    def _tl_edit_frame(self, idx: int):
+        """Open FrameEditWindow for timeline slot `idx`.
+
+        Edits are saved to a private _compose_edits/ folder inside the output
+        directory so the source animation's files are never touched.
+        Replace → update this slot's PNG.
+        New Frame → insert a new slot after this one.
+        """
+        from frame_edit_window import FrameEditWindow
+        from PIL import Image as _Image
+
+        item = self._items[idx]
+
+        edits_dir = self._output_dir / "_compose_edits"
+        edits_dir.mkdir(parents=True, exist_ok=True)
+
+        def on_save(result_img: _Image.Image, replace: bool):
+            self._edit_counter += 1
+            fname = f"edit_{self._edit_counter:04d}.png"
+            dest  = edits_dir / fname
+            result_img.save(dest)
+
+            if replace:
+                self._items[idx].png = dest
+            else:
+                new_item = _CItem(item.anim_dir, dest)
+                self._items.insert(idx + 1, new_item)
+
+            self._rebuild_timeline()
+
+        FrameEditWindow(self._win, item.png, on_save)
+
     def _tl_rotate(self, idx: int, delta: int):
         item = self._items[idx]
         item.rotate = (item.rotate + delta) % 360
@@ -524,21 +541,6 @@ class ComposeWindow:
         self._items[idx].rotate = degrees % 360
         self._rebuild_timeline()
 
-    def _tl_set_skew(self, idx: int, degrees: float):
-        self._items[idx].skew_x = degrees
-        self._rebuild_timeline()
-
-    def _tl_skew_custom(self, idx: int):
-        dlg = _InputDialog(self._win, "Custom Skew",
-                           "Horizontal skew angle (degrees):",
-                           str(self._items[idx].skew_x))
-        if dlg.result is None:
-            return
-        try:
-            self._items[idx].skew_x = float(dlg.result)
-            self._rebuild_timeline()
-        except ValueError:
-            messagebox.showerror("Invalid", "Enter a number.", parent=self._win)
 
     def _tl_highlight(self):
         for i, card in enumerate(self._tl_cells):
@@ -682,8 +684,8 @@ class ComposeWindow:
         for item in self._items:
             try:
                 img = Image.open(item.png).convert("RGBA")
-                if item.rotate or item.skew_x:
-                    img = _apply_transform(img, item.rotate, item.skew_x)
+                if item.rotate:
+                    img = _apply_transform(img, item.rotate, 0)
                 mw = max(mw, img.width)
                 mh = max(mh, img.height)
             except Exception:
@@ -709,10 +711,8 @@ class ComposeWindow:
         idx = min(self._cp_current, len(self._items) - 1)
         try:
             img = Image.open(self._items[idx].png).convert("RGBA")
-            if self._items[idx].rotate or self._items[idx].skew_x:
-                img = _apply_transform(img,
-                                       self._items[idx].rotate,
-                                       self._items[idx].skew_x)
+            if self._items[idx].rotate:
+                img = _apply_transform(img, self._items[idx].rotate, 0)
         except Exception:
             return
 
@@ -815,9 +815,9 @@ class ComposeWindow:
         new_frames = []
         for i, item in enumerate(self._items):
             dst = out_dir / f"{i:03d}.png"
-            if item.rotate or item.skew_x:
+            if item.rotate:
                 img = Image.open(item.png).convert("RGBA")
-                img = _apply_transform(img, item.rotate, item.skew_x)
+                img = _apply_transform(img, item.rotate, 0)
                 img.save(dst)
             else:
                 _shutil.copy2(item.png, dst)

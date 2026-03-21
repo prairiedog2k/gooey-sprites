@@ -49,11 +49,29 @@ def detect_bg_color(img: Image.Image) -> tuple[int, int, int]:
 
 
 def sprite_fg_mask(arr: np.ndarray, bg: tuple, tol: int) -> np.ndarray:
-    """True for genuine sprite pixels (not background, not white border)."""
-    diff = np.abs(arr[:,:,:3].astype(np.int32) - np.array(bg, dtype=np.int32))
+    """Strict segmentation mask: True for non-background AND non-near-white pixels.
+
+    The near-white exclusion (R,G,B > 200) prevents embedded text labels and
+    white grid lines from inflating the detected sprite bounding boxes.  It is
+    intentionally used only for *finding* blob extents; see `_sprite_paint_mask`
+    for the relaxed version used when compositing pixels inside those bounds.
+    """
+    diff      = np.abs(arr[:,:,:3].astype(np.int32) - np.array(bg, dtype=np.int32))
     is_bg     = diff.max(axis=2) <= tol
     is_border = (arr[:,:,0] > 200) & (arr[:,:,1] > 200) & (arr[:,:,2] > 200)
     return ~is_bg & ~is_border
+
+
+def _sprite_paint_mask(arr: np.ndarray, bg: tuple, tol: int) -> np.ndarray:
+    """Relaxed compositing mask: True for any non-background pixel.
+
+    Used inside already-established blob bounding boxes so that near-white
+    sprite pixels (highlights, light shading) are preserved, while text labels
+    outside the box were already excluded during segmentation.
+    """
+    diff  = np.abs(arr[:,:,:3].astype(np.int32) - np.array(bg, dtype=np.int32))
+    is_bg = diff.max(axis=2) <= tol
+    return ~is_bg
 
 
 # ── Separator detection ────────────────────────────────────────────────────────
@@ -144,6 +162,63 @@ Blob  = tuple[int, int, int, int]   # (sx0, sy0, sx1, sy1) in sheet coordinates
 Frame = list[Blob]                   # one or more blobs that form one output frame
 
 
+def _max_opaque_pixels(images: list) -> int:
+    """Return the highest non-transparent pixel count across all frames."""
+    best = 0
+    for img in images:
+        count = int((np.array(img)[:, :, 3] > 0).sum())
+        if count > best:
+            best = count
+    return best
+
+
+# Palette-complexity thresholds used by flag_false_positives().
+# Animations with ≤ _FP_ABS_COLORS bucketed colors are almost certainly false.
+# Animations below _FP_REL_FACTOR × median score are relatively flagged.
+_FP_ABS_COLORS  = 10
+_FP_REL_FACTOR  = 0.18
+
+
+def _palette_score(images: list) -> int:
+    """Count distinct non-transparent RGB colors (quantized to 32-step buckets).
+
+    Quantising prevents anti-aliasing / compression noise from inflating the
+    score while still cleanly separating 1-3-colour backgrounds from real
+    sprites (which typically have dozens of distinct hues and shades).
+    """
+    packed: set[int] = set()
+    for img in images:
+        arr = np.array(img)
+        mask = arr[:, :, 3] > 0
+        if not mask.any():
+            continue
+        # Right-shift 5 → 3-bit channels (8 steps per channel = 512 max buckets).
+        px   = arr[mask, :3].astype(np.uint32) >> 5
+        keys = (px[:, 0] << 6) | (px[:, 1] << 3) | px[:, 2]
+        packed.update(keys.tolist())
+    return len(packed)
+
+
+def flag_false_positives(scores: list[int]) -> list[bool]:
+    """Return True for each animation whose palette score looks like a false positive.
+
+    Two conditions, either of which triggers a flag:
+    - Absolute: score ≤ _FP_ABS_COLORS (background / text cells almost always
+      have ≤ 10 distinct bucketed colours).
+    - Relative: score < _FP_REL_FACTOR × median score of all animations (catches
+      suspiciously simple animations even on sheets with simpler art styles).
+    """
+    if not scores:
+        return []
+    valid = [s for s in scores if s > 0]
+    if not valid:
+        return [True] * len(scores)
+    median_score = sorted(valid)[len(valid) // 2]
+    rel_threshold = median_score * _FP_REL_FACTOR
+    threshold = max(_FP_ABS_COLORS, rel_threshold)
+    return [s <= threshold for s in scores]
+
+
 def _compose_frame(blobs: Frame, arr: np.ndarray,
                    bg: tuple, tol: int) -> Image.Image:
     """Render a list of blobs onto a transparent canvas at their correct relative positions."""
@@ -154,7 +229,7 @@ def _compose_frame(blobs: Frame, arr: np.ndarray,
     canvas = np.zeros((bottom - top, right - left, 4), dtype=np.uint8)
     for sx0, sy0, sx1, sy1 in blobs:
         piece      = arr[sy0:sy1, sx0:sx1].copy()
-        fg         = sprite_fg_mask(piece, bg, tol)
+        fg         = _sprite_paint_mask(piece, bg, tol)
         piece[~fg] = [0, 0, 0, 0]
         dx, dy     = sx0 - left, sy0 - top
         dst        = canvas[dy:dy+(sy1-sy0), dx:dx+(sx1-sx0)]
@@ -452,12 +527,25 @@ class SpriteSheet:
             raise KeyError(f"Animation '{name}' not found.\nAvailable: {avail}")
         return self._extract_cell(cell, max_intra_gap)
 
-    def extract_all(self, max_intra_gap: int = 4) -> list[tuple[Cell, list[Image.Image], list[Frame]]]:
+    def extract_all(self, max_intra_gap: int = 4,
+                    min_pixels: int = 100,
+                    ) -> list[tuple[Cell, list[Image.Image], list[Frame], int]]:
+        """Extract every cell, dropping animations with no real sprite content.
+
+        Returns a list of (cell, images, frames, palette_score).  Callers can
+        pass the scores to flag_false_positives() to identify likely non-sprite
+        cells.
+
+        min_pixels: minimum non-transparent pixel count that at least one frame
+        must contain.  Cells with only a solid background or label text produce
+        very sparse frames and are filtered out by this threshold.
+        """
         results = []
         for cell in self.cells():
             images, frames = self._extract_cell(cell, max_intra_gap)
-            if images:
-                results.append((cell, images, frames))
+            if images and _max_opaque_pixels(images) >= min_pixels:
+                score = _palette_score(images)
+                results.append((cell, images, frames, score))
         return results
 
     # ── internals ──────────────────────────────────────────────────────────────
@@ -609,11 +697,16 @@ examples:
     # Extract all
     if args.all:
         results = sheet.extract_all(max_intra_gap=args.gap)
-        for n, (_, sprites, frames) in enumerate(results, 1):
+        scores  = [score for *_, score in results]
+        flagged = flag_false_positives(scores)
+        for n, ((_, sprites, frames, score), is_fp) in enumerate(
+                zip(results, flagged), 1):
             folder  = f"unknown-{n:03d}"
             out_dir = out_root / folder
             save_animation(out_dir, sprites, frames, args.gif, sheet.bg, sheet.tol)
-            print(f"  {folder}  ->  {out_dir}  ({len(sprites)} frames)")
+            fp_tag  = "  [possible false positive]" if is_fp else ""
+            print(f"  {folder}  ->  {out_dir}  ({len(sprites)} frames, "
+                  f"{score} palette buckets){fp_tag}")
         print(f"\nDone — {len(results)} animations extracted to '{out_root}'.")
         return
 

@@ -6,11 +6,13 @@ gui_sprites.py — GUI front-end for extract_sprites.py
 Usage:
   python gui_sprites.py
   python gui_sprites.py path/to/sheet.gif
+  python gui_sprites.py path/to/sheet.png
+  python gui_sprites.py path/to/sheet.jpg
   python gui_sprites.py path/to/sheet.gif --output ./sprites
   python gui_sprites.py myproject.ssproj
 
-Project files (.ssproj) are JSON and store the GIF path, output folder,
-and extraction settings so a session can be resumed in one click.
+Project files (.ssproj) are JSON and store the sprite sheet path, output
+folder, and extraction settings so a session can be resumed in one click.
 """
 
 import argparse
@@ -25,7 +27,7 @@ from sprite_gui import SpriteGUI
 def main():
     ap = argparse.ArgumentParser(description="Sprite Sheet Extractor GUI")
     ap.add_argument("file",   nargs="?", default="",
-                    help=f"Sprite-sheet GIF or project file ({PROJECT_EXT}).")
+                    help=f"Sprite-sheet image (GIF/PNG/JPEG) or project file ({PROJECT_EXT}).")
     ap.add_argument("--output", "-o", default="",
                     help="Output folder (ignored when loading a project file).")
     args = ap.parse_args()
