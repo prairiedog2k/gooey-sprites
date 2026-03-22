@@ -1,4 +1,4 @@
-# Sprite Sheet Extractor
+# Gooey Sprites - A Sprite Sheet Animation Playground
 
 A desktop GUI application for extracting individual sprites from a sprite sheet image. Supports GIF, PNG, and JPEG input formats. Extracted sprites are saved as individual PNG files organized into named animation folders.
 
