@@ -54,6 +54,7 @@ class SpriteGUI:
         self.v_tol          = tk.IntVar(value=20)
         self.v_minpx        = tk.IntVar(value=100)
         self.v_filter_false = tk.BooleanVar(value=False)
+        self.v_auto_split   = tk.BooleanVar(value=True)
 
         self._anim_dirs: list[Path] = []
         self._flagged_anims: set[str] = set()
@@ -62,7 +63,11 @@ class SpriteGUI:
         self._frame_images: list[ImageTk.PhotoImage] = []
         self._frame_cells:  list[tk.Frame] = []
         self._last_clicked: int | None = None
+        self._frame_zoom: float = 1.0       # user zoom multiplier (1.0 = fit)
+        self._frame_fit_scale: float = 1.0  # scale that makes max-height frame fill canvas
+        self._frame_zoom_lbl: tk.Label | None = None
         self._project_path: Path | None = None   # currently open .ssproj
+        self._sheet_copy_path: Path | None = None  # project-local copy of sprite sheet
         self._managed_anims: list[str] = []      # folder names this project created
         self._dirty: bool = False                 # unsaved changes since last save
         self._undo_stack: list[tuple[str, object]] = []   # (description, callable)
@@ -215,11 +220,19 @@ class SpriteGUI:
                               accelerator="Ctrl+N")
         file_menu.add_command(label="Open Project…",     command=self._open_project,
                               accelerator="Ctrl+O")
+        self._recent_menu = tk.Menu(file_menu, tearoff=False,
+                                    bg=BG_PANEL, fg=FG,
+                                    activebackground=BG_SEL, activeforeground=ACCENT,
+                                    relief=tk.FLAT)
+        file_menu.add_cascade(label="Open Recent", menu=self._recent_menu)
+        self._rebuild_recent_menu()
         file_menu.add_separator()
         file_menu.add_command(label="Save Project",      command=self._save_project,
                               accelerator="Ctrl+S")
         file_menu.add_command(label="Save Project As…",  command=self._save_project_as,
                               accelerator="Ctrl+Shift+S")
+        file_menu.add_separator()
+        file_menu.add_command(label="View Sprite Sheet…", command=self._open_sheet_viewer)
         file_menu.add_separator()
         file_menu.add_command(label="Exit",              command=self._on_close)
 
@@ -237,6 +250,7 @@ class SpriteGUI:
         self.root.bind_all("<Control-s>", lambda _: self._save_project())
         self.root.bind_all("<Control-S>", lambda _: self._save_project_as())
         self.root.bind_all("<Control-z>", lambda _: self._do_undo())
+        self.root.bind_all("<F2>", lambda _: self._rename_folder())
 
     def _build_toolbar(self):
         bar = tk.Frame(self.root, bg=BG_PANEL, pady=6, padx=8)
@@ -249,7 +263,8 @@ class SpriteGUI:
         tk.Entry(r1, textvariable=self.v_gif, bg=BG_CARD, fg=FG,
                  insertbackground=FG, relief=tk.FLAT, width=55,
                  font=("Consolas", 9)).pack(side=tk.LEFT, padx=4)
-        self._btn(r1, "Browse…", self._browse_gif).pack(side=tk.LEFT)
+        self._btn(r1, "Browse…",    self._browse_gif).pack(side=tk.LEFT)
+        self._btn(r1, "View Sheet", self._open_sheet_viewer).pack(side=tk.LEFT, padx=(4, 0))
 
         r2 = tk.Frame(bar, bg=BG_PANEL)
         r2.pack(fill=tk.X, pady=2)
@@ -263,7 +278,7 @@ class SpriteGUI:
         r3 = tk.Frame(bar, bg=BG_PANEL)
         r3.pack(fill=tk.X, pady=4)
         self._btn(r3, "Extract All",          self._extract_all,   GREEN).pack(side=tk.LEFT, padx=(0, 4))
-        self._btn(r3, "Load Output Folder",   self._load_output,   ACCENT).pack(side=tk.LEFT, padx=4)
+        self._btn(r3, "Load Output Folder",   self._user_load_output, ACCENT).pack(side=tk.LEFT, padx=4)
         self._label(r3, "  Gap:").pack(side=tk.LEFT)
         tk.Spinbox(r3, from_=0, to=20, textvariable=self.v_gap, width=4,
                    bg=BG_CARD, fg=FG, buttonbackground=BG_CARD,
@@ -278,6 +293,12 @@ class SpriteGUI:
                    relief=tk.FLAT).pack(side=tk.LEFT)
         tk.Checkbutton(r3, text="  Filter false positives",
                        variable=self.v_filter_false,
+                       bg=BG_PANEL, fg=FG, selectcolor=BG_CARD,
+                       activebackground=BG_PANEL, activeforeground=FG,
+                       relief=tk.FLAT, borderwidth=0,
+                       font=("", 9)).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Checkbutton(r3, text="  Auto Split",
+                       variable=self.v_auto_split,
                        bg=BG_PANEL, fg=FG, selectcolor=BG_CARD,
                        activebackground=BG_PANEL, activeforeground=FG,
                        relief=tk.FLAT, borderwidth=0,
@@ -377,11 +398,12 @@ class SpriteGUI:
 
         self.frame_holder = tk.Frame(self.canvas, bg=BG_PANEL)
         self._canvas_win = self.canvas.create_window(
-            (4, 4), window=self.frame_holder, anchor=tk.NW)
+            (0, 0), window=self.frame_holder, anchor=tk.NW)
         self.frame_holder.bind(
             "<Configure>",
             lambda e: self.canvas.configure(
                 scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", self._on_frame_canvas_configure)
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
 
         # ── bottom frame toolbar ──────────────────────────────────────────────
@@ -394,6 +416,16 @@ class SpriteGUI:
         tk.Label(bot,
                  text="Click to select  |  Ctrl+click to add/remove  |  Shift+click to range-select",
                  bg=BG_PANEL, fg=FG_DIM, font=("", 8)).pack(side=tk.LEFT, padx=12)
+
+        # Zoom controls (right-aligned)
+        self._frame_zoom_lbl = tk.Label(bot, text="100%", width=5,
+                                        bg=BG_PANEL, fg=FG, font=("Consolas", 8))
+        self._frame_zoom_lbl.pack(side=tk.RIGHT, padx=(0, 4))
+        self._btn(bot, "+",   self._frame_zoom_in,  small=True).pack(side=tk.RIGHT, padx=1)
+        self._btn(bot, "Fit", self._frame_zoom_fit, small=True).pack(side=tk.RIGHT, padx=1)
+        self._btn(bot, "−",   self._frame_zoom_out, small=True).pack(side=tk.RIGHT, padx=1)
+        tk.Label(bot, text="Zoom:", bg=BG_PANEL, fg=FG_DIM,
+                 font=("", 8)).pack(side=tk.RIGHT, padx=(8, 2))
 
         self._build_preview_panel(self._pv_pane)
 
@@ -457,6 +489,7 @@ class SpriteGUI:
         out_dir = p.parent / p.stem   # e.g. MyGame.ssproj → MyGame/
 
         self._project_path = p
+        self._sheet_copy_path = None
         self.v_gif.set("")
         self.v_out.set(str(out_dir))
         self.v_gap.set(4)
@@ -483,6 +516,43 @@ class SpriteGUI:
         self._update_title()
         self._set_status(f"New project '{p.stem}'.")
 
+    # ── recent projects ───────────────────────────────────────────────────────
+
+    _RECENT_FILE = Path.home() / ".sprite_sheet_recent.json"
+    _RECENT_MAX  = 4
+
+    def _load_recent_projects(self) -> list[str]:
+        try:
+            import json as _json
+            return _json.loads(self._RECENT_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    def _push_recent_project(self, path: Path) -> None:
+        import json as _json
+        p = str(path.resolve())
+        recents = [r for r in self._load_recent_projects() if r != p]
+        recents.insert(0, p)
+        recents = recents[:self._RECENT_MAX]
+        try:
+            self._RECENT_FILE.write_text(_json.dumps(recents, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self) -> None:
+        if not hasattr(self, "_recent_menu"):
+            return
+        self._recent_menu.delete(0, tk.END)
+        recents = self._load_recent_projects()
+        if not recents:
+            self._recent_menu.add_command(label="(none)", state=tk.DISABLED)
+        else:
+            for p in recents:
+                self._recent_menu.add_command(
+                    label=p,
+                    command=lambda p_=p: self._load_project_file(Path(p_)))
+
     def _open_project(self):
         path = filedialog.askopenfilename(
             title="Open Project",
@@ -498,8 +568,9 @@ class SpriteGUI:
         except Exception as exc:
             messagebox.showerror("Open Project", f"Could not read project:\n{exc}")
             return
-        gif_abs, out_abs = _resolve_project_paths(data, path.parent)
+        gif_abs, out_abs, sheet_abs = _resolve_project_paths(data, path.parent)
         self._project_path = path
+        self._sheet_copy_path = Path(sheet_abs) if sheet_abs else None
         self.v_gif.set(gif_abs)
         self.v_out.set(out_abs or "./sprites")
         self.v_gap.set(int(data.get("gap", 4)))
@@ -511,6 +582,7 @@ class SpriteGUI:
         self._clear_undo()
         self._update_title()
         self._set_status(f"Opened '{path.name}'.")
+        self._push_recent_project(path)
         self._load_output()
 
     def _save_project(self):
@@ -531,10 +603,40 @@ class SpriteGUI:
         self._write_current_project(self._project_path)
         self._update_title()
 
+    def _ensure_sheet_copy(self, src: Path) -> str:
+        """Copy *src* into the project directory; return relative path of the copy.
+
+        If *src* is already inside the project directory no copy is made.
+        Returns "" when no project is open or the source file doesn't exist.
+        """
+        if not self._project_path or not src.exists():
+            return ""
+        proj_dir = self._project_path.parent
+        try:
+            rel = src.relative_to(proj_dir)
+            self._sheet_copy_path = src
+            return str(rel)
+        except ValueError:
+            pass
+        dest = proj_dir / f"sheet{src.suffix}"
+        # Only re-copy when the destination is missing or the source has changed
+        if not dest.exists() or dest.stat().st_size != src.stat().st_size:
+            shutil.copy2(str(src), str(dest))
+        self._sheet_copy_path = dest
+        return f"sheet{src.suffix}"
+
     def _write_current_project(self, path: Path):
         try:
+            gif_path  = self.v_gif.get().strip()
+            sheet_rel = ""
+            if gif_path:
+                try:
+                    sheet_rel = self._ensure_sheet_copy(Path(gif_path))
+                except Exception:
+                    pass
             _write_project(path,
-                           gif=self.v_gif.get().strip(),
+                           gif=gif_path,
+                           sheet=sheet_rel,
                            output=self.v_out.get().strip(),
                            gap=self.v_gap.get(),
                            tol=self.v_tol.get(),
@@ -565,6 +667,23 @@ class SpriteGUI:
         p = filedialog.askdirectory()
         if p:
             self.v_out.set(p)
+
+    def _open_sheet_viewer(self):
+        # Prefer the project-local copy; fall back to the raw v_gif path
+        path: Path | None = None
+        if self._sheet_copy_path and self._sheet_copy_path.exists():
+            path = self._sheet_copy_path
+        else:
+            raw = self.v_gif.get().strip()
+            if raw:
+                path = Path(raw)
+        if not path or not path.exists():
+            messagebox.showwarning("Sprite Sheet",
+                                   "No sprite sheet is loaded.\n"
+                                   "Browse to a sprite sheet file first.")
+            return
+        from sheet_viewer import SheetViewerWindow
+        SheetViewerWindow(self.root, path)
 
     def _maybe_autoload(self):
         """If output folder already has extracted animations, load them."""
@@ -605,9 +724,14 @@ class SpriteGUI:
                                             min_pixels=self.v_minpx.get())
                 folders: list[str] = []
                 scores:  list[int] = []
+                auto_split = self.v_auto_split.get()
                 for n, (_, sprites, frames, score) in enumerate(results, 1):
                     folder  = f"unknown-{n:03d}"
                     out_dir = out_root / folder
+                    if auto_split:
+                        from extract_sprites import apply_auto_split
+                        sprites, frames = apply_auto_split(
+                            sprites, frames, sheet.arr, sheet.bg, sheet.tol)
                     save_animation(out_dir, sprites, frames, gif, sheet.bg, sheet.tol)
                     folders.append(folder)
                     scores.append(score)
@@ -665,6 +789,11 @@ class SpriteGUI:
     # ── animation list ────────────────────────────────────────────────────────
 
     def _load_output(self):
+        """Refresh the animation list from the output folder.
+
+        This is called from many internal places (rename, merge, split, etc.).
+        Auto-split is NOT applied here; use ``_user_load_output`` for that.
+        """
         out = Path(self.v_out.get().strip())
         if not out.exists():
             self._set_status(f"Output folder not found: {out}")
@@ -683,6 +812,64 @@ class SpriteGUI:
         self._set_status(f"Loaded {len(anims)} animation(s) from '{out}'.")
         self._refresh_palette()
 
+    def _user_load_output(self):
+        """Called by the 'Load Output Folder' button.  Applies auto-split if enabled."""
+        if not self.v_auto_split.get():
+            self._load_output()
+            return
+        out = Path(self.v_out.get().strip())
+        if not out.exists():
+            self._set_status(f"Output folder not found: {out}")
+            return
+        anims = sorted(
+            d for d in out.iterdir()
+            if d.is_dir() and (d / "frames.json").exists()
+        )
+        self._set_status(f"Loaded {len(anims)} animation(s) — auto-splitting…")
+        self._anim_dirs = anims
+        self.anim_list.delete(0, tk.END)
+        for a in anims:
+            self.anim_list.insert(tk.END, a.name)
+            if a.name in self._flagged_anims:
+                i = self.anim_list.size() - 1
+                self.anim_list.itemconfig(i, fg=YELLOW)
+        self._refresh_palette()
+
+        def _run_splits():
+            changed = sum(self._auto_split_dir(d) for d in anims)
+            self.root.after(0, lambda n=changed: (
+                self._load_output(),
+                self._mark_dirty() if n else None,
+                self._set_status(
+                    f"Loaded {len(anims)} animation(s)"
+                    + (f"  ({n} frame(s) split)" if n else "") + ".")
+            ))
+        threading.Thread(target=_run_splits, daemon=True).start()
+
+    def _auto_split_dir(self, anim_dir: Path) -> int:
+        """Split every multi-blob frame in *anim_dir* into single-blob frames.
+
+        Returns the number of frames that were split.
+        """
+        try:
+            import json as _json
+            from extract_sprites import cmd_split
+            meta_path = anim_dir / "frames.json"
+            if not meta_path.exists():
+                return 0
+            meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+            # Work highest-index first so earlier indices stay valid after each split
+            multi = [
+                i for i, f in enumerate(meta["frames"])
+                if len(f.get("blobs", [])) > 1
+                and not f["blobs"][0].get("png_local")  # skip already-png-local blobs
+            ]
+            for idx in reversed(multi):
+                cmd_split(anim_dir, idx, split_x=None)
+            return len(multi)
+        except Exception:
+            return 0
+
     def _on_anim_select(self, _event=None):
         sel = self.anim_list.curselection()
         if not sel:
@@ -693,6 +880,7 @@ class SpriteGUI:
         self.selected_anim = anim_dir
         self.selected_frames.clear()
         self._last_clicked = None
+        self._frame_zoom = 1.0   # reset to fit whenever the animation changes
         self.lbl_anim.config(text=anim_dir.name)
         self._load_frames(anim_dir)
         self._pv_load(anim_dir)
@@ -821,14 +1009,66 @@ class SpriteGUI:
 
         pngs = sorted(anim_dir.glob("*.png"))
 
+        # Per-card vertical overhead: card.pady (3 top+3 bot=6) + index label (~14px)
+        _CARD_H_OVERHEAD = 20
+        # Per-card horizontal overhead: card.padx (3+3=6) + grid padx (3+3=6)
+        _CARD_W_OVERHEAD = 12
+
+        ch = self.canvas.winfo_height()
+        cw = self.canvas.winfo_width()
+
         if pngs:
-            max_h = max(Image.open(p).height for p in pngs)
-            scale = max(MIN_SCALE, min(MAX_SCALE, THUMB_H / max(max_h, 1)))
+            # Open each image once to get both dimensions
+            img_sizes = []
+            for p in pngs:
+                try:
+                    im = Image.open(p)
+                    img_sizes.append(im.size)   # (width, height)
+                except Exception:
+                    img_sizes.append((1, 1))
+            max_h = max(s[1] for s in img_sizes)
+
+            if ch > 20 and cw > 20 and max_h > 0:
+                # Height fit: leave 8 px margin per side (16 px total) above card overhead
+                scale_h = (ch - _CARD_H_OVERHEAD - 16) / max_h
+
+                # Width fit: all frames visible at once, no horizontal scrolling needed
+                total_src_w = sum(s[0] for s in img_sizes)
+                avail_w = cw - len(pngs) * _CARD_W_OVERHEAD - 8
+                scale_w = avail_w / total_src_w if total_src_w > 0 else scale_h
+
+                self._frame_fit_scale = max(0.1, min(float(MAX_SCALE),
+                                                     scale_h, scale_w))
+            else:
+                # Canvas not yet laid out — fall back to THUMB_H, refit once ready
+                self._frame_fit_scale = max(float(MIN_SCALE),
+                                            min(float(MAX_SCALE), THUMB_H / max(max_h, 1)))
+                self.root.after(120,
+                    lambda d=anim_dir: self._load_frames(d)
+                    if self.selected_anim == d else None)
+
+            scale = self._frame_fit_scale * self._frame_zoom
+
+            # bottom_pad: space below all cards so the tallest card sits at
+            #   screen_bottom = ch/2 + max_card_h/2  (i.e. tallest card centred).
+            # All cards share the same bottom_pad → they are bottom-aligned.
+            max_card_h = round(max_h * scale) + _CARD_H_OVERHEAD
+            bottom_pad = max(4, (ch - max_card_h) // 2)
         else:
-            scale = MIN_SCALE
+            scale      = self._frame_fit_scale * self._frame_zoom
+            bottom_pad = 20
+
+        # Keep the embedded window exactly as tall as the canvas so the grid
+        # row has room to honour bottom_pad without overflow.
+        if ch > 20:
+            self.canvas.itemconfig(self._canvas_win, height=ch)
+            self.frame_holder.rowconfigure(0, minsize=ch)
+
+        if self._frame_zoom_lbl:
+            self._frame_zoom_lbl.config(text=f"{round(scale * 100)}%")
 
         for i, png in enumerate(pngs):
-            self._add_frame_card(i, png, scale)
+            self._add_frame_card(i, png, scale, bottom_pad)
 
         self._drag_indicator = tk.Frame(self.frame_holder, bg=ACCENT,
                                         width=3, cursor="sb_h_double_arrow")
@@ -838,7 +1078,8 @@ class SpriteGUI:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self._pv_reload()
 
-    def _add_frame_card(self, idx: int, png_path: Path, scale: float):
+    def _add_frame_card(self, idx: int, png_path: Path, scale: float,
+                        bottom_pad: int = 6):
         try:
             photo = _make_thumb(png_path, scale)
         except Exception:
@@ -846,7 +1087,9 @@ class SpriteGUI:
 
         card = tk.Frame(self.frame_holder, bg=BG_CARD,
                         padx=3, pady=3, cursor="hand2")
-        card.grid(row=0, column=idx, sticky=tk.N, padx=3, pady=6)
+        # sticky=S + shared bottom_pad → all cards bottom-align at the same Y,
+        # which positions the tallest card vertically centred in the view.
+        card.grid(row=0, column=idx, sticky=tk.S, padx=3, pady=(0, bottom_pad))
 
         if photo:
             img_lbl = tk.Label(card, image=photo, bg=BG_CARD,
@@ -911,6 +1154,37 @@ class SpriteGUI:
 
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_frame_canvas_configure(self, event):
+        """On window resize, refit the current animation if one is loaded."""
+        h = event.height
+        if h > 1 and self.selected_anim:
+            # Debounce: cancel any pending refit and schedule a fresh one
+            if hasattr(self, "_frame_refit_id"):
+                self.root.after_cancel(self._frame_refit_id)
+            anim = self.selected_anim
+            self._frame_refit_id = self.root.after(
+                150, lambda d=anim: self._load_frames(d)
+                if self.selected_anim == d else None)
+
+    # ── frame zoom ────────────────────────────────────────────────────────────
+
+    _FRAME_ZOOM_STEP = 1.25
+
+    def _frame_zoom_in(self):
+        self._frame_zoom = min(self._frame_zoom * self._FRAME_ZOOM_STEP, 16.0)
+        if self.selected_anim:
+            self._load_frames(self.selected_anim)
+
+    def _frame_zoom_out(self):
+        self._frame_zoom = max(self._frame_zoom / self._FRAME_ZOOM_STEP, 0.05)
+        if self.selected_anim:
+            self._load_frames(self.selected_anim)
+
+    def _frame_zoom_fit(self):
+        self._frame_zoom = 1.0
+        if self.selected_anim:
+            self._load_frames(self.selected_anim)
 
     # ── merge / split / delete frames ─────────────────────────────────────────
 

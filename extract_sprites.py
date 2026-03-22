@@ -261,6 +261,31 @@ def stitch_frames(boxes: list[Blob],
     return images, groups
 
 
+def apply_auto_split(
+    sprites: list,
+    frames:  list,
+    arr,
+    bg:  tuple,
+    tol: int,
+) -> "tuple[list, list]":
+    """Return new (sprites, frames) with every multi-blob frame expanded into
+    individual single-blob frames, each rendered from the original sheet array.
+
+    Pass the result to ``save_animation`` instead of the original lists.
+    """
+    new_sprites: list = []
+    new_frames:  list = []
+    for sprite, frame in zip(sprites, frames):
+        if len(frame) <= 1:
+            new_sprites.append(sprite)
+            new_frames.append(frame)
+        else:
+            for blob in frame:
+                new_sprites.append(_compose_frame([blob], arr, bg, tol))
+                new_frames.append([blob])
+    return new_sprites, new_frames
+
+
 # ── Metadata I/O ───────────────────────────────────────────────────────────────
 
 FRAMES_JSON = "frames.json"

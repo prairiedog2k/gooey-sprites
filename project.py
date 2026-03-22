@@ -16,7 +16,8 @@ def _read_project(path: Path) -> dict:
 def _write_project(path: Path, gif: str, output: str, gap: int, tol: int,
                    animations: list[str] | None = None,
                    min_pixels: int = 100,
-                   flagged_animations: list[str] | None = None):
+                   flagged_animations: list[str] | None = None,
+                   sheet: str = ""):
     # Store paths relative to the project file so the folder can be moved.
     proj_dir = path.parent
 
@@ -29,6 +30,7 @@ def _write_project(path: Path, gif: str, output: str, gap: int, tol: int,
     data = {
         "version":    PROJECT_VERSION,
         "gif":        _rel(gif)    if gif    else "",
+        "sheet":      _rel(sheet)  if sheet  else "",
         "output":     _rel(output) if output else "",
         "gap":        gap,
         "tol":        tol,
@@ -39,11 +41,13 @@ def _write_project(path: Path, gif: str, output: str, gap: int, tol: int,
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _resolve_project_paths(data: dict, proj_dir: Path) -> tuple[str, str]:
-    """Return (gif_abs, output_abs) resolving relative paths against proj_dir."""
+def _resolve_project_paths(data: dict, proj_dir: Path) -> tuple[str, str, str]:
+    """Return (gif_abs, output_abs, sheet_abs) resolving relative paths against proj_dir."""
     def _abs(p: str) -> str:
         if not p:
             return ""
         pp = Path(p)
         return str((proj_dir / pp).resolve()) if not pp.is_absolute() else p
-    return _abs(data.get("gif", "")), _abs(data.get("output", ""))
+    return (_abs(data.get("gif", "")),
+            _abs(data.get("output", "")),
+            _abs(data.get("sheet", "")))
