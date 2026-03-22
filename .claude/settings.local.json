@@ -11,7 +11,11 @@
       "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Idle\" --output ./out3)",
       "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Crouch H. Punch\" --output ./out3)",
       "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Walking\" --output ./out3)",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred\" --output ./out4)"
+      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred\" --output ./out4)",
+      "Bash(git rm:*)",
+      "Bash(gh auth:*)",
+      "Bash(git --version)",
+      "Bash(gh --version)"
     ]
   }
 }

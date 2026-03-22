@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gui_sprites.py — GUI front-end for extract_sprites.py
+gooey_sprites.py — GUI front-end for extract_sprites.py
 
 Usage:
-  python gui_sprites.py
-  python gui_sprites.py path/to/sheet.gif
-  python gui_sprites.py path/to/sheet.png
-  python gui_sprites.py path/to/sheet.jpg
-  python gui_sprites.py path/to/sheet.gif --output ./sprites
-  python gui_sprites.py myproject.ssproj
+  python gooey_sprites.py
+  python gooey_sprites.py path/to/sheet.gif
+  python gooey_sprites.py path/to/sheet.png
+  python gooey_sprites.py path/to/sheet.jpg
+  python gooey_sprites.py path/to/sheet.gif --output ./sprites
+  python gooey_sprites.py myproject.ssproj
 
 Project files (.ssproj) are JSON and store the sprite sheet path, output
 folder, and extraction settings so a session can be resumed in one click.
