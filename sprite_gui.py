@@ -1,5 +1,6 @@
 """SpriteGUI — main application window."""
 
+import json
 import shutil
 import threading
 import tkinter as tk
@@ -63,14 +64,14 @@ class SpriteGUI:
         self._frame_images: list[ImageTk.PhotoImage] = []
         self._frame_cells:  list[tk.Frame] = []
         self._last_clicked: int | None = None
-        self._frame_zoom: float = 1.0       # user zoom multiplier (1.0 = fit)
-        self._frame_fit_scale: float = 1.0  # scale that makes max-height frame fill canvas
+        self._frame_zoom: float = 1.0
+        self._frame_fit_scale: float = 1.0
         self._frame_zoom_lbl: tk.Label | None = None
-        self._project_path: Path | None = None   # currently open .ssproj
-        self._sheet_copy_path: Path | None = None  # project-local copy of sprite sheet
-        self._managed_anims: list[str] = []      # folder names this project created
-        self._dirty: bool = False                 # unsaved changes since last save
-        self._undo_stack: list[tuple[str, object]] = []   # (description, callable)
+        self._project_path: Path | None = None
+        self._sheet_copy_path: Path | None = None
+        self._managed_anims: list[str] = []
+        self._dirty: bool = False
+        self._undo_stack: list[tuple[str, object]] = []
         self._MAX_UNDO = 50
 
         # preview state
@@ -97,17 +98,26 @@ class SpriteGUI:
         self._drag_indicator: tk.Frame | None = None
 
         # palette panel state
-        self._pal_colors: list = []          # [(r, g, b, count), …]
+        self._pal_colors: list = []
         self._pal_n_colors      = tk.IntVar(value=16)
         self._pal_selected_idx: int | None = None
         self._pal_canvas:       tk.Canvas | None = None
         self._pal_count_lbl:    tk.Label  | None = None
         self._pal_n_lbl:        tk.Label  | None = None
         self._pal_hover_label:  tk.Label  | None = None
-        # color-frames section (bottom half of palette panel)
         self._pal_col_canvas:   tk.Canvas | None = None
         self._pal_col_hdr_lbl:  tk.Label  | None = None
         self._pal_col_img_refs: list = []
+
+        # pane focus state
+        self._focused_pane: str = "animations"  # animations|frames|preview|palette
+        self._anim_hdr_lbl:   tk.Label | None = None
+        self._frames_hdr_lbl: tk.Label | None = None
+        self._pv_hdr_lbl:     tk.Label | None = None
+        self._pal_hdr_lbl:    tk.Label | None = None
+        self._anim_menu:      tk.Menu  | None = None
+        self._frames_menu:    tk.Menu  | None = None
+        self._preview_menu:   tk.Menu  | None = None
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -129,6 +139,86 @@ class SpriteGUI:
     def _clear_undo(self) -> None:
         self._undo_stack.clear()
         self._update_undo_menu()
+
+    def _clear_ui(self) -> None:
+        """Clear all views — animation list, frame viewer, and preview."""
+        # Stop preview playback and blank the canvas
+        self._pv_pause()
+        self._pv_frames = []
+        if self._pv_canvas and self._pv_canvas.winfo_exists():
+            self._pv_canvas.delete("all")
+
+        # Clear animation list, selection, and frame viewer
+        self.anim_list.delete(0, tk.END)
+        self._anim_dirs.clear()
+        self.selected_anim = None
+        self.selected_frames.clear()
+        self._last_clicked = None
+        self.lbl_anim.config(text="")
+        self.lbl_sel.config(text="")
+        for w in self.frame_holder.winfo_children():
+            w.destroy()
+        self._frame_images.clear()
+        self._frame_cells.clear()
+
+        # Clear palette
+        self._pal_colors = []
+        self._pal_redraw()
+
+    # ── pane focus ────────────────────────────────────────────────────────────
+
+    _PANE_ORDER = ["animations", "frames", "preview", "palette"]
+
+    def _set_pane_focus(self, pane: str) -> None:
+        self._focused_pane = pane
+        lbl_map = {
+            "animations": self._anim_hdr_lbl,
+            "frames":     self._frames_hdr_lbl,
+            "preview":    self._pv_hdr_lbl,
+            "palette":    self._pal_hdr_lbl,
+        }
+        for name, lbl in lbl_map.items():
+            if lbl and lbl.winfo_exists():
+                lbl.config(fg=GREEN if name == pane else ACCENT)
+        self._update_pane_menus()
+
+    def _update_pane_menus(self) -> None:
+        def _set_menu(menu: tk.Menu | None, state: str) -> None:
+            if not menu:
+                return
+            last = menu.index("end")
+            if last is None:
+                return
+            for i in range(last + 1):
+                try:
+                    menu.entryconfig(i, state=state)
+                except tk.TclError:
+                    pass  # separators
+
+        _set_menu(self._anim_menu,    tk.NORMAL if self._focused_pane == "animations" else tk.DISABLED)
+        _set_menu(self._frames_menu,  tk.NORMAL if self._focused_pane == "frames"     else tk.DISABLED)
+        _set_menu(self._preview_menu, tk.NORMAL if self._focused_pane == "preview"    else tk.DISABLED)
+
+    def _focus_next_pane(self) -> None:
+        order = self._PANE_ORDER
+        idx = order.index(self._focused_pane) if self._focused_pane in order else 0
+        self._set_pane_focus(order[(idx + 1) % len(order)])
+
+    def _focus_prev_pane(self) -> None:
+        order = self._PANE_ORDER
+        idx = order.index(self._focused_pane) if self._focused_pane in order else 0
+        self._set_pane_focus(order[(idx - 1) % len(order)])
+
+    def _open_frame_edit_from_menu(self) -> None:
+        if not self.selected_anim or not self.selected_frames:
+            return
+        self._open_frame_edit(min(self.selected_frames))
+
+    def _pv_faster(self) -> None:
+        self._pv_delay.set(max(20, self._pv_delay.get() - 20))
+
+    def _pv_slower(self) -> None:
+        self._pv_delay.set(min(2000, self._pv_delay.get() + 20))
 
     def _do_undo(self) -> None:
         if not self._undo_stack:
@@ -153,20 +243,28 @@ class SpriteGUI:
         else:
             self._edit_menu.entryconfig(0, label="Undo", state=tk.DISABLED)
 
+    def _select_list_item(self, idx: int) -> None:
+        """Select the animation at *idx* in the listbox and load its content."""
+        if not self._anim_dirs:
+            return
+        idx = max(0, min(idx, len(self._anim_dirs) - 1))
+        self.anim_list.selection_clear(0, tk.END)
+        self.anim_list.selection_set(idx)
+        self.anim_list.see(idx)
+        d = self._anim_dirs[idx]
+        self.selected_anim = d
+        self.selected_frames.clear()
+        self._last_clicked = None
+        self.lbl_anim.config(text=d.name)
+        self._load_frames(d)
+        self._pv_load(d)
+
     def _select_anim_by_path(self, path: Path) -> None:
         """Select and display the animation at *path* if it still exists."""
         self._load_output()
         for i, d in enumerate(self._anim_dirs):
             if d == path:
-                self.anim_list.selection_clear(0, tk.END)
-                self.anim_list.selection_set(i)
-                self.anim_list.see(i)
-                self.selected_anim = d
-                self.selected_frames.clear()
-                self._last_clicked = None
-                self.lbl_anim.config(text=d.name)
-                self._load_frames(d)
-                self._pv_load(d)
+                self._select_list_item(i)
                 return
 
     # ── close ─────────────────────────────────────────────────────────────────
@@ -206,24 +304,25 @@ class SpriteGUI:
         self._build_statusbar()
 
     def _build_menu(self):
+        def _menu(**kw):
+            return tk.Menu(None, tearoff=False,
+                           bg=BG_PANEL, fg=FG,
+                           activebackground=BG_SEL, activeforeground=ACCENT,
+                           relief=tk.FLAT, **kw)
+
         menubar = tk.Menu(self.root, bg=BG_PANEL, fg=FG,
                           activebackground=BG_SEL, activeforeground=ACCENT,
                           relief=tk.FLAT, borderwidth=0)
         self.root.config(menu=menubar)
 
-        file_menu = tk.Menu(menubar, tearoff=False,
-                            bg=BG_PANEL, fg=FG,
-                            activebackground=BG_SEL, activeforeground=ACCENT,
-                            relief=tk.FLAT)
+        # ── File ──────────────────────────────────────────────────────────────
+        file_menu = _menu()
         menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="New Project",       command=self._new_project,
                               accelerator="Ctrl+N")
         file_menu.add_command(label="Open Project…",     command=self._open_project,
                               accelerator="Ctrl+O")
-        self._recent_menu = tk.Menu(file_menu, tearoff=False,
-                                    bg=BG_PANEL, fg=FG,
-                                    activebackground=BG_SEL, activeforeground=ACCENT,
-                                    relief=tk.FLAT)
+        self._recent_menu = _menu()
         file_menu.add_cascade(label="Open Recent", menu=self._recent_menu)
         self._rebuild_recent_menu()
         file_menu.add_separator()
@@ -236,21 +335,64 @@ class SpriteGUI:
         file_menu.add_separator()
         file_menu.add_command(label="Exit",              command=self._on_close)
 
-        edit_menu = tk.Menu(menubar, tearoff=False,
-                            bg=BG_PANEL, fg=FG,
-                            activebackground=BG_SEL, activeforeground=ACCENT,
-                            relief=tk.FLAT)
+        # ── Edit ──────────────────────────────────────────────────────────────
+        edit_menu = _menu()
         menubar.add_cascade(label="Edit", menu=edit_menu)
         edit_menu.add_command(label="Undo", command=self._do_undo,
                               accelerator="Ctrl+Z", state=tk.DISABLED)
         self._edit_menu = edit_menu
 
+        # ── Animations ────────────────────────────────────────────────────────
+        anim_menu = _menu()
+        menubar.add_cascade(label="Animations", menu=anim_menu)
+        anim_menu.add_command(label="Rename…",      command=self._rename_folder)
+        anim_menu.add_command(label="Duplicate",    command=self._duplicate_anim)
+        anim_menu.add_command(label="Remove",       command=self._delete_anim)
+        anim_menu.add_separator()
+        anim_menu.add_command(label="Compose From", command=lambda: self._open_compose(
+                                                        initial_anim=self.selected_anim))
+        anim_menu.add_command(label="Compose New",  command=self._open_compose)
+        self._anim_menu = anim_menu
+
+        # ── Frames ────────────────────────────────────────────────────────────
+        frames_menu = _menu()
+        menubar.add_cascade(label="Frames", menu=frames_menu)
+        frames_menu.add_command(label="Edit",      command=self._open_frame_edit_from_menu)
+        frames_menu.add_command(label="Split",     command=self._split_frame)
+        frames_menu.add_command(label="Merge",     command=self._merge_frames)
+        frames_menu.add_command(label="Duplicate", command=self._duplicate_frame)
+        frames_menu.add_command(label="Delete",    command=self._delete_selected_frames)
+        self._frames_menu = frames_menu
+
+        # ── Preview ───────────────────────────────────────────────────────────
+        preview_menu = _menu()
+        menubar.add_cascade(label="Preview", menu=preview_menu)
+        preview_menu.add_command(label="Start",  command=self._pv_play)
+        preview_menu.add_command(label="Stop",   command=self._pv_pause)
+        preview_menu.add_checkbutton(label="Loop", variable=self._pv_loop)
+        preview_menu.add_separator()
+        preview_menu.add_command(label="Faster", command=self._pv_faster)
+        preview_menu.add_command(label="Slower", command=self._pv_slower)
+        self._preview_menu = preview_menu
+
+        # Initial menu state — Animations pane starts focused
+        self._update_pane_menus()
+
+        # ── Global key bindings ───────────────────────────────────────────────
         self.root.bind_all("<Control-n>", lambda _: self._new_project())
         self.root.bind_all("<Control-o>", lambda _: self._open_project())
         self.root.bind_all("<Control-s>", lambda _: self._save_project())
         self.root.bind_all("<Control-S>", lambda _: self._save_project_as())
         self.root.bind_all("<Control-z>", lambda _: self._do_undo())
-        self.root.bind_all("<F2>", lambda _: self._rename_folder())
+        self.root.bind_all("<F2>",        lambda _: self._rename_folder())
+        self.root.bind_all("<Control-Key-1>", lambda _: self._set_pane_focus("animations"))
+        self.root.bind_all("<Control-Key-2>", lambda _: self._set_pane_focus("frames"))
+        self.root.bind_all("<Control-Key-3>", lambda _: self._set_pane_focus("preview"))
+        self.root.bind_all("<Control-Key-4>", lambda _: self._set_pane_focus("palette"))
+        self.root.bind_all("<Left>",         lambda _: self._frame_arrow_key(-1, shift=False))
+        self.root.bind_all("<Right>",        lambda _: self._frame_arrow_key(+1, shift=False))
+        self.root.bind_all("<Shift-Left>",   lambda _: self._frame_arrow_key(-1, shift=True))
+        self.root.bind_all("<Shift-Right>",  lambda _: self._frame_arrow_key(+1, shift=True))
 
     def _build_toolbar(self):
         bar = tk.Frame(self.root, bg=BG_PANEL, pady=6, padx=8)
@@ -327,8 +469,9 @@ class SpriteGUI:
         left = tk.Frame(pane, bg=BG_PANEL, width=220)
         pane.add(left, minsize=160)
 
-        tk.Label(left, text="Animations", bg=BG_PANEL, fg=ACCENT,
-                 font=("", 10, "bold"), pady=6).pack(fill=tk.X, padx=8)
+        self._anim_hdr_lbl = tk.Label(left, text="Animations", bg=BG_PANEL, fg=GREEN,
+                                      font=("", 10, "bold"), pady=6)
+        self._anim_hdr_lbl.pack(fill=tk.X, padx=8)
 
         lf = tk.Frame(left, bg=BG_PANEL)
         lf.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
@@ -348,6 +491,7 @@ class SpriteGUI:
         self.anim_list.bind("<<ListboxSelect>>", self._on_anim_select)
         self.anim_list.bind("<Delete>",          lambda _: self._delete_anim())
         self.anim_list.bind("<Button-3>",        self._anim_right_click)
+        self.anim_list.bind("<Button-1>",        lambda _: self._set_pane_focus("animations"), add="+")
 
         # buttons under the list
         btn_row = tk.Frame(left, bg=BG_PANEL)
@@ -371,8 +515,9 @@ class SpriteGUI:
 
         hdr = tk.Frame(right, bg=BG_PANEL, pady=4)
         hdr.pack(fill=tk.X)
-        tk.Label(hdr, text="Frames", bg=BG_PANEL, fg=ACCENT,
-                 font=("", 10, "bold")).pack(side=tk.LEFT, padx=8)
+        self._frames_hdr_lbl = tk.Label(hdr, text="Frames", bg=BG_PANEL, fg=ACCENT,
+                                        font=("", 10, "bold"))
+        self._frames_hdr_lbl.pack(side=tk.LEFT, padx=8)
         self.lbl_anim = tk.Label(hdr, text="", bg=BG_PANEL,
                                  fg=FG_DIM, font=("Consolas", 9))
         self.lbl_anim.pack(side=tk.LEFT)
@@ -395,6 +540,7 @@ class SpriteGUI:
         hbar.pack(side=tk.BOTTOM, fill=tk.X)
         vbar.pack(side=tk.RIGHT,  fill=tk.Y)
         self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Button-1>", lambda _: self._set_pane_focus("frames"), add="+")
 
         self.frame_holder = tk.Frame(self.canvas, bg=BG_PANEL)
         self._canvas_win = self.canvas.create_window(
@@ -486,33 +632,26 @@ class SpriteGUI:
         if not path:
             return
         p = Path(path)
-        out_dir = p.parent / p.stem   # e.g. MyGame.ssproj → MyGame/
 
-        self._project_path = p
+        # Create a project folder named after the project stem,
+        # then place the .ssproj file and output dir inside it.
+        proj_folder = p.parent / p.stem
+        proj_folder.mkdir(parents=True, exist_ok=True)
+        proj_file = proj_folder / p.name
+
+        self._project_path = proj_file
         self._sheet_copy_path = None
         self.v_gif.set("")
-        self.v_out.set(str(out_dir))
+        self.v_out.set(str(proj_folder))
         self.v_gap.set(4)
         self.v_tol.set(20)
         self.v_minpx.set(100)
-        self._anim_dirs.clear()
-        self.anim_list.delete(0, tk.END)
-        self.selected_anim = None
-        self.selected_frames.clear()
-        for w in self.frame_holder.winfo_children():
-            w.destroy()
-        self._frame_images.clear()
-        self._frame_cells.clear()
-        self.lbl_anim.config(text="")
-        self.lbl_sel.config(text="")
         self._managed_anims.clear()
         self._flagged_anims.clear()
-        self._pal_colors = []
-        self._pal_redraw()
+        self._clear_ui()
         self._dirty = False
         self._clear_undo()
-        # Write the project file immediately so the path is established on disk
-        self._write_current_project(p)
+        self._write_current_project(proj_file)
         self._update_title()
         self._set_status(f"New project '{p.stem}'.")
 
@@ -569,6 +708,7 @@ class SpriteGUI:
             messagebox.showerror("Open Project", f"Could not read project:\n{exc}")
             return
         gif_abs, out_abs, sheet_abs = _resolve_project_paths(data, path.parent)
+        self._clear_ui()
         self._project_path = path
         self._sheet_copy_path = Path(sheet_abs) if sheet_abs else None
         self.v_gif.set(gif_abs)
@@ -584,6 +724,8 @@ class SpriteGUI:
         self._set_status(f"Opened '{path.name}'.")
         self._push_recent_project(path)
         self._load_output()
+        if self._anim_dirs:
+            self._select_list_item(0)
 
     def _save_project(self):
         if self._project_path is None:
@@ -894,16 +1036,21 @@ class SpriteGUI:
                 "Load an output folder with extracted animations first.")
             return
 
-        def _after_compose_save():
+        def _after_compose_save(anim_name: str):
+            if anim_name not in self._managed_anims:
+                self._managed_anims.append(anim_name)
             self._load_output()
             if self._project_path:
                 self._write_current_project(self._project_path)
+            else:
+                self._mark_dirty()
 
         ComposeWindow(
             parent       = self.root,
             output_dir   = Path(out),
             on_save      = _after_compose_save,
-            initial_anim = initial_anim)
+            initial_anim = initial_anim,
+            on_close     = self._load_output)
 
     def _rename_folder(self):
         if not self.selected_anim:
@@ -919,12 +1066,62 @@ class SpriteGUI:
             messagebox.showerror("Rename", f"'{new_name}' already exists.")
             return
         old_path = self.selected_anim
+
+        # Capture current frame file names for undo before any changes
+        old_meta_path = old_path / "frames.json"
+        old_frame_files = []
+        if old_meta_path.exists():
+            meta = json.loads(old_meta_path.read_text(encoding="utf-8"))
+            old_frame_files = [(f["index"], f["file"]) for f in meta["frames"]]
+
+        old_name = old_path.name
         old_path.rename(new_path)
         self.selected_anim = new_path
-        def _undo_rename(op=old_path, np_=new_path):
+
+        # Rename frame files to [new_name]-NNN.png and update frames.json
+        new_meta_path = new_path / "frames.json"
+        if new_meta_path.exists():
+            meta = json.loads(new_meta_path.read_text(encoding="utf-8"))
+            for f in meta["frames"]:
+                old_file = new_path / f["file"]
+                new_file_name = f"{new_name}-{f['index']:03d}.png"
+                if old_file.exists() and old_file.name != new_file_name:
+                    old_file.rename(new_path / new_file_name)
+                f["file"] = new_file_name
+            new_meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+        # Keep managed/flagged animation name lists in sync
+        self._managed_anims = [new_name if n == old_name else n
+                                for n in self._managed_anims]
+        if old_name in self._flagged_anims:
+            self._flagged_anims.discard(old_name)
+            self._flagged_anims.add(new_name)
+
+        def _undo_rename(op=old_path, np_=new_path,
+                         old_files=old_frame_files, o_name=old_name, n_name=new_name):
+            # Restore frame file names in frames.json, then rename folder back
+            undo_meta = np_ / "frames.json"
+            if undo_meta.exists() and old_files:
+                meta = json.loads(undo_meta.read_text(encoding="utf-8"))
+                old_by_idx = dict(old_files)
+                for f in meta["frames"]:
+                    old_fname = old_by_idx.get(f["index"])
+                    if old_fname and f["file"] != old_fname:
+                        cur = np_ / f["file"]
+                        if cur.exists():
+                            cur.rename(np_ / old_fname)
+                        f["file"] = old_fname
+                undo_meta.write_text(json.dumps(meta, indent=2), encoding="utf-8")
             np_.rename(op)
+            # Restore managed/flagged lists
+            self._managed_anims = [o_name if n == n_name else n
+                                    for n in self._managed_anims]
+            if n_name in self._flagged_anims:
+                self._flagged_anims.discard(n_name)
+                self._flagged_anims.add(o_name)
             self._select_anim_by_path(op)
-        self._push_undo(f"Rename '{old_path.name}' → '{new_name}'", _undo_rename)
+
+        self._push_undo(f"Rename '{old_name}' → '{new_name}'", _undo_rename)
         self._mark_dirty()
         self._load_output()
         for i, d in enumerate(self._anim_dirs):
@@ -960,9 +1157,7 @@ class SpriteGUI:
         self._load_output()
         for i, d in enumerate(self._anim_dirs):
             if d == new_path:
-                self.anim_list.selection_clear(0, tk.END)
-                self.anim_list.selection_set(i)
-                self.anim_list.see(i)
+                self._select_list_item(i)
                 break
         self._set_status(f"Duplicated '{name}' as '{new_name}'.")
 
@@ -978,7 +1173,12 @@ class SpriteGUI:
             return
         snap = _snapshot_anim_dir(self.selected_anim)
         path = self.selected_anim
+        prev_idx = self._anim_dirs.index(path) if path in self._anim_dirs else 0
+        was_managed = name in self._managed_anims
+        was_flagged = name in self._flagged_anims
         shutil.rmtree(self.selected_anim)
+        self._managed_anims = [n for n in self._managed_anims if n != name]
+        self._flagged_anims.discard(name)
         self.selected_anim = None
         self.selected_frames.clear()
         self._last_clicked = None
@@ -988,12 +1188,18 @@ class SpriteGUI:
             w.destroy()
         self._frame_images.clear()
         self._frame_cells.clear()
-        def _undo_delete_anim(p=path, s=snap):
+        def _undo_delete_anim(p=path, s=snap, n=name, wm=was_managed, wf=was_flagged):
             _restore_anim_dir(p, s)
+            if wm and n not in self._managed_anims:
+                self._managed_anims.append(n)
+            if wf:
+                self._flagged_anims.add(n)
             self._select_anim_by_path(p)
         self._push_undo(f"Delete '{name}'", _undo_delete_anim)
         self._mark_dirty()
         self._load_output()
+        if self._anim_dirs:
+            self._select_list_item(max(0, prev_idx - 1))
         self._set_status(f"Deleted '{name}'.")
 
     # ── frame viewer ──────────────────────────────────────────────────────────
@@ -1151,6 +1357,48 @@ class SpriteGUI:
         else:
             s = sorted(self.selected_frames)
             self.lbl_sel.config(text=f"{n} frames selected: {s}")
+
+    def _frame_arrow_key(self, direction: int, shift: bool) -> None:
+        """Left/Right arrow navigation in the frames pane."""
+        if self._focused_pane != "frames" or not self._frame_cells:
+            return
+        n = len(self._frame_cells)
+        if self._last_clicked is not None:
+            cursor = self._last_clicked
+        else:
+            cursor = 0 if direction > 0 else n - 1
+        new_idx = cursor + direction
+        if new_idx < 0 or new_idx >= n:
+            return
+        if shift:
+            self.selected_frames.add(new_idx)
+        else:
+            self.selected_frames = {new_idx}
+        self._last_clicked = new_idx
+        self._refresh_cards()
+        self._update_sel_label()
+        self._scroll_card_into_view(new_idx)
+
+    def _scroll_card_into_view(self, idx: int) -> None:
+        """Scroll the frames canvas so the card at *idx* is visible."""
+        if idx < 0 or idx >= len(self._frame_cells):
+            return
+        card = self._frame_cells[idx]
+        sr = self.canvas.bbox("all")
+        if not sr:
+            return
+        total_w = sr[2] - sr[0]
+        if total_w <= 0:
+            return
+        card_x = card.winfo_x()
+        card_w = card.winfo_width()
+        canvas_w = self.canvas.winfo_width()
+        view_left  = self.canvas.xview()[0] * total_w
+        view_right = view_left + canvas_w
+        if card_x < view_left:
+            self.canvas.xview_moveto(card_x / total_w)
+        elif card_x + card_w > view_right:
+            self.canvas.xview_moveto((card_x + card_w - canvas_w) / total_w)
 
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -1393,8 +1641,9 @@ class SpriteGUI:
 
         hdr = tk.Frame(top_ctrl, bg=BG_PANEL, pady=4)
         hdr.grid(row=0, column=0, sticky=tk.EW)
-        tk.Label(hdr, text="Palette", bg=BG_PANEL, fg=ACCENT,
-                 font=("", 10, "bold")).pack(side=tk.LEFT, padx=8)
+        self._pal_hdr_lbl = tk.Label(hdr, text="Palette", bg=BG_PANEL, fg=ACCENT,
+                                     font=("", 10, "bold"))
+        self._pal_hdr_lbl.pack(side=tk.LEFT, padx=8)
         self._pal_count_lbl = tk.Label(hdr, text="", bg=BG_PANEL,
                                        fg=FG_DIM, font=("", 8))
         self._pal_count_lbl.pack(side=tk.LEFT)
@@ -1450,6 +1699,7 @@ class SpriteGUI:
         self._pal_canvas.bind("<Leave>",     lambda _: self._pal_hover_update(""))
         self._pal_canvas.bind("<Button-1>",  self._pal_click)
         self._pal_canvas.bind("<Button-3>",  self._pal_right_click)
+        self._pal_canvas.bind("<Button-1>",  lambda _: self._set_pane_focus("palette"), add="+")
 
         # ── bottom pane: frames with selected color ───────────────────────────
         col_frame = tk.Frame(vpane, bg=BG_PANEL)
@@ -1959,8 +2209,9 @@ class SpriteGUI:
 
         hdr = tk.Frame(parent, bg=BG_PANEL, pady=4)
         hdr.pack(fill=tk.X)
-        tk.Label(hdr, text="Preview", bg=BG_PANEL, fg=ACCENT,
-                 font=("", 10, "bold")).pack(side=tk.LEFT, padx=8)
+        self._pv_hdr_lbl = tk.Label(hdr, text="Preview", bg=BG_PANEL, fg=ACCENT,
+                                    font=("", 10, "bold"))
+        self._pv_hdr_lbl.pack(side=tk.LEFT, padx=8)
         is_detached = isinstance(parent, tk.Toplevel)
         if is_detached:
             self._btn(hdr, "Reattach", self._pv_reattach,
@@ -1972,6 +2223,7 @@ class SpriteGUI:
         self._pv_canvas = tk.Canvas(parent, bg=BG_PANEL, highlightthickness=0)
         self._pv_canvas.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         self._pv_canvas.bind("<Configure>", lambda _: self._pv_render())
+        self._pv_canvas.bind("<Button-1>",  lambda _: self._set_pane_focus("preview"), add="+")
 
         ctrl = tk.Frame(parent, bg=BG_PANEL, pady=4)
         ctrl.pack(fill=tk.X, padx=4)
@@ -2003,6 +2255,10 @@ class SpriteGUI:
                                       bg=BG_PANEL, fg=FG_DIM,
                                       font=("Consolas", 8), width=7)
         self._pv_lbl_delay.pack(side=tk.LEFT)
+
+        # Restore focus highlight if preview pane was focused
+        if self._pv_hdr_lbl and self._focused_pane == "preview":
+            self._pv_hdr_lbl.config(fg=GREEN)
 
         if self._pv_frames:
             self._pv_render()
@@ -2314,7 +2570,10 @@ class SpriteGUI:
         name = self.selected_anim.name
         snap = _snapshot_anim_dir(self.selected_anim)
         path = self.selected_anim
+        prev_idx = self._anim_dirs.index(path) if path in self._anim_dirs else 0
+        was_managed = name in self._managed_anims
         shutil.rmtree(self.selected_anim)
+        self._managed_anims = [n for n in self._managed_anims if n != name]
         self._flagged_anims.discard(name)
         self.selected_anim = None
         self.selected_frames.clear()
@@ -2325,13 +2584,17 @@ class SpriteGUI:
             w.destroy()
         self._frame_images.clear()
         self._frame_cells.clear()
-        def _undo_del(p=path, s=snap, n=name):
+        def _undo_del(p=path, s=snap, n=name, wm=was_managed):
             _restore_anim_dir(p, s)
+            if wm and n not in self._managed_anims:
+                self._managed_anims.append(n)
             self._flagged_anims.add(n)
             self._select_anim_by_path(p)
         self._push_undo(f"Delete '{name}'", _undo_del)
         self._mark_dirty()
         self._load_output()
+        if self._anim_dirs:
+            self._select_list_item(max(0, prev_idx - 1))
         self._set_status(f"Deleted '{name}'.")
 
     def _frame_right_click(self, event, idx: int):
@@ -2361,39 +2624,71 @@ class SpriteGUI:
         frame_path = pngs[frame_idx]
         anim_dir   = self.selected_anim
 
-        def on_save(result_img: Image.Image, replace: bool):
-            import json
-            snap = _snapshot_anim_dir(anim_dir)
+        meta_path  = anim_dir / "frames.json"
 
-            meta_path = anim_dir / "frames.json"
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        def _make_save_fn(fp):
+            """Return an on_save closure bound to a specific frame path."""
+            def on_save(result_img: Image.Image, replace: bool, hitboxes: list):
+                snap = _snapshot_anim_dir(anim_dir)
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                if replace:
+                    result_img.save(fp)
+                    tgt = next(
+                        (f for f in meta["frames"] if f["file"] == fp.name), None)
+                    if tgt is not None:
+                        tgt["hitboxes"] = [dict(h) for h in hitboxes]
+                    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+                    op = f"Edit (replace) frame {fp.name}"
+                else:
+                    new_i = max(f["index"] for f in meta["frames"]) + 1
+                    sample = meta["frames"][0]["file"] if meta["frames"] else ""
+                    anim_name = anim_dir.name
+                    new_file = (f"{anim_name}-{new_i:03d}.png"
+                                if sample.startswith(anim_name + "-")
+                                else f"{new_i:03d}.png")
+                    result_img.save(anim_dir / new_file)
+                    src = next(
+                        (f for f in meta["frames"] if f["file"] == fp.name), None)
+                    meta["frames"].append({
+                        "index":    new_i,
+                        "file":     new_file,
+                        "blobs":    src["blobs"] if src else [],
+                        "hitboxes": [dict(h) for h in hitboxes],
+                    })
+                    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+                    op = f"Edit (new) from {fp.name}"
 
-            if replace:
-                result_img.save(frame_path)
-                op = f"Edit (replace) frame {frame_idx}"
-            else:
-                # Append as new frame at end, copying blob metadata from source
-                new_idx = max(f["index"] for f in meta["frames"]) + 1
-                new_file = f"{new_idx:03d}.png"
-                result_img.save(anim_dir / new_file)
-                src_frame = next(
-                    (f for f in meta["frames"] if f["index"] == frame_idx), None)
-                meta["frames"].append({
-                    "index": new_idx,
-                    "file":  new_file,
-                    "blobs": src_frame["blobs"] if src_frame else [],
-                })
-                meta_path.write_text(
-                    json.dumps(meta, indent=2), encoding="utf-8")
-                op = f"Edit (new) from frame {frame_idx}"
+                def _undo(p=anim_dir, s=snap):
+                    _restore_anim_dir(p, s)
+                    self._select_anim_by_path(p)
 
-            def _undo(p=anim_dir, s=snap):
-                _restore_anim_dir(p, s)
-                self._select_anim_by_path(p)
+                self._push_undo(op, _undo)
+                self._mark_dirty()
+                self._load_frames(anim_dir)
+            return on_save
 
-            self._push_undo(op, _undo)
-            self._mark_dirty()
-            self._load_frames(anim_dir)
+        def get_frame_data(new_idx: int):
+            fp = pngs[new_idx]
+            fm = {}
+            if meta_path.exists():
+                _fmeta = json.loads(meta_path.read_text(encoding="utf-8"))
+                fm = next(
+                    (f for f in _fmeta["frames"] if f["file"] == fp.name), {})
+            return fp, fm, _make_save_fn(fp)
+
+        frame_meta = {}
+        if meta_path.exists():
+            _fmeta = json.loads(meta_path.read_text(encoding="utf-8"))
+            frame_meta = next(
+                (f for f in _fmeta["frames"] if f["file"] == frame_path.name), {})
+
+        # Build palette from the project's top 16 colors (if available)
+        proj_palette = [(f"#{r:02x}{g:02x}{b:02x}",
+                         f"#{r:02x}{g:02x}{b:02x}")
+                        for r, g, b, _ in self._pal_colors[:16]] or None
 
         from frame_edit_window import FrameEditWindow
-        FrameEditWindow(self.root, frame_path, on_save)
+        FrameEditWindow(self.root, frame_path, _make_save_fn(frame_path),
+                        frame_meta=frame_meta, palette=proj_palette,
+                        frame_list=pngs, frame_index=frame_idx,
+                        get_frame_data=get_frame_data)

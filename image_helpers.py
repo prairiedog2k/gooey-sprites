@@ -1,11 +1,17 @@
 """Thumbnail helpers, per-frame compose data, and image transform utilities."""
 
 import math as _math
+import uuid as _uuid
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageTk
 
 from constants import CHECKER, MIN_SCALE, MAX_SCALE
+
+
+def _gen_uid() -> str:
+    """Return a short unique identifier for a frame."""
+    return _uuid.uuid4().hex[:8]
 
 
 def _make_thumb(png_path: Path, scale: float) -> ImageTk.PhotoImage:
@@ -35,16 +41,21 @@ def _thumb_scale(pngs: list, target_h: int) -> float:
 
 class _CItem:
     """One frame slot in the compose timeline."""
-    __slots__ = ("anim_dir", "png", "rotate", "skew_x")
+    __slots__ = ("anim_dir", "png", "rotate", "skew_x", "uid", "director_meta")
 
     def __init__(self, anim_dir: Path, png: Path,
-                 rotate: int = 0, skew_x: float = 0.0):
+                 rotate: int = 0, skew_x: float = 0.0,
+                 uid: str | None = None,
+                 director_meta: dict | None = None):
         self.anim_dir = anim_dir   # source animation folder
         self.png      = png        # source PNG path
         self.rotate   = rotate     # CW degrees: 0, 90, 180, 270
         self.skew_x   = skew_x     # horizontal shear angle in degrees
+        self.uid      = uid or _gen_uid()
+        self.director_meta = director_meta  # opaque to Compose, preserved on save
 
     def copy(self) -> "_CItem":
+        """Copy with new uid and no director metadata."""
         return _CItem(self.anim_dir, self.png, self.rotate, self.skew_x)
 
 

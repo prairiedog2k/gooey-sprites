@@ -15,7 +15,19 @@
       "Bash(git rm:*)",
       "Bash(gh auth:*)",
       "Bash(git --version)",
-      "Bash(gh --version)"
+      "Bash(gh --version)",
+      "Bash(find /c/Users/rober/OneDrive/Documents -name *.png -not -path *_compose_edits*)",
+      "Bash(xargs -I{} dirname {})",
+      "Bash(python -c \"import frame_edit_window; print\\(''OK''\\)\")",
+      "Bash(python -c \"import frame_edit_window; import sprite_gui; print\\(''OK''\\)\")",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(python -c \"import compose_window; print\\(''OK''\\)\")",
+      "Bash(python -c \"import sprite_gui; import compose_window; print\\(''OK''\\)\")",
+      "mcp__serena__check_onboarding_performed",
+      "mcp__serena__onboarding",
+      "mcp__serena__list_dir",
+      "mcp__serena__get_symbols_overview"
     ]
   }
 }

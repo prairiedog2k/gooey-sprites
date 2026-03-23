@@ -6,10 +6,10 @@
     "configurations": [
         
         {
-            "name": "gui_sprites",
+            "name": "gooey_sprites",
             "type": "debugpy",
             "request": "launch",
-            "program": "gui_sprites.py",
+            "program": "gooey_sprites.py",
             "console": "integratedTerminal"
         }
     ]

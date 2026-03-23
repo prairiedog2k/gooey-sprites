@@ -50,11 +50,14 @@ def _cmd_duplicate_frame(out_dir: Path, src_idx: int):
 
     _shutil.copy2(out_dir / src_frame["file"], out_dir / f"{new_idx:03d}.png")
 
-    meta["frames"].append({
+    new_entry = {
         "index": new_idx,
         "file":  f"{new_idx:03d}.png",
         "blobs": src_frame["blobs"],
-    })
+    }
+    if src_frame.get("hitboxes"):
+        new_entry["hitboxes"] = list(src_frame["hitboxes"])
+    meta["frames"].append(new_entry)
     meta_path.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
 
 

@@ -45,15 +45,18 @@ class ComposeWindow:
     _DRAG_THRESHOLD = 8   # px of movement before a click becomes a drag
 
     def __init__(self, parent: tk.Tk, output_dir: Path, on_save,
-                 initial_anim: Path | None = None):
+                 initial_anim: Path | None = None,
+                 on_close=None):
         self._output_dir  = output_dir
         self._on_save     = on_save
+        self._on_close    = on_close
         self._initial_anim = initial_anim
 
         # Timeline state
         self._items:  list[_CItem] = []
         self._tl_sel: set[int]     = set()
         self._edit_counter: int    = 0   # unique id for compose-edit temp PNGs
+        self._needs_save:   bool   = False
 
         # Photo-image caches (keep refs to prevent GC)
         self._src_photos: dict[Path, ImageTk.PhotoImage] = {}
@@ -138,8 +141,25 @@ class ComposeWindow:
     def _prepopulate(self, anim_dir: Path):
         """Pre-fill the timeline and name field from an existing animation."""
         self._v_name.set(anim_dir.name)
+        # read existing frames.json for UIDs and director metadata
+        meta_map: dict[str, dict] = {}
+        fj = anim_dir / "frames.json"
+        if fj.exists():
+            try:
+                data = json.loads(fj.read_text(encoding="utf-8"))
+                for f in data.get("frames", []):
+                    meta_map[Path(f["file"]).stem] = f
+            except Exception:
+                pass
         for png in sorted(anim_dir.glob("*.png")):
-            self._items.append(_CItem(anim_dir, png))
+            fmeta = meta_map.get(png.stem, {})
+            uid = fmeta.get("uid")
+            dm: dict = {}
+            for key in ("keyframe", "hold", "tween", "tween_steps"):
+                if key in fmeta:
+                    dm[key] = fmeta[key]
+            self._items.append(_CItem(anim_dir, png, uid=uid,
+                                      director_meta=dm or None))
         self._rebuild_timeline()
 
     # ── source browser ────────────────────────────────────────────────────────
@@ -285,17 +305,42 @@ class ComposeWindow:
     # ── bottom pane: timeline + preview ──────────────────────────────────────
 
     def _build_bottom(self, parent: tk.Frame):
-        hp = tk.PanedWindow(parent, orient=tk.HORIZONTAL, bg=BG,
+        # tab bar
+        tab = tk.Frame(parent, bg=BG, padx=8, pady=2)
+        tab.pack(fill=tk.X)
+        self._tab_compose_btn = tk.Button(
+            tab, text="Compose", command=self._show_compose_tab,
+            bg=BG_SEL, fg=ACCENT, activeforeground=ACCENT,
+            activebackground=BG_SEL, relief=tk.FLAT,
+            padx=12, pady=2, font=("", 8, "bold"), cursor="hand2")
+        self._tab_compose_btn.pack(side=tk.LEFT, padx=2)
+        self._tab_director_btn = tk.Button(
+            tab, text="Director", command=self._show_director_tab,
+            bg=BG_CARD, fg=FG_DIM, activeforeground=ACCENT,
+            activebackground=BG_SEL, relief=tk.FLAT,
+            padx=12, pady=2, font=("", 8, "bold"), cursor="hand2")
+        self._tab_director_btn.pack(side=tk.LEFT, padx=2)
+
+        self._tab_container = tk.Frame(parent, bg=BG)
+        self._tab_container.pack(fill=tk.BOTH, expand=True)
+
+        # compose view
+        self._compose_view = tk.Frame(self._tab_container, bg=BG)
+        hp = tk.PanedWindow(self._compose_view, orient=tk.HORIZONTAL, bg=BG,
                             sashwidth=5, sashrelief=tk.FLAT)
         hp.pack(fill=tk.BOTH, expand=True)
-
         tl_f = tk.Frame(hp, bg=BG_PANEL)
         pv_f = tk.Frame(hp, bg=BG_PANEL, width=280)
         hp.add(tl_f, minsize=300)
         hp.add(pv_f, minsize=220)
-
         self._build_timeline(tl_f)
         self._build_preview(pv_f)
+
+        # director view (hidden initially)
+        self._director_view = tk.Frame(self._tab_container, bg=BG)
+        self._director_panel = None
+        self._active_tab = "compose"
+        self._compose_view.pack(fill=tk.BOTH, expand=True)
 
     # ── timeline ──────────────────────────────────────────────────────────────
 
@@ -356,6 +401,8 @@ class ComposeWindow:
                  bg=BG_PANEL, fg=FG_DIM, font=("", 9)).pack(pady=28)
 
     def _rebuild_timeline(self):
+        if self._items:
+            self._needs_save = True
         for w in self._tl_inner.winfo_children():
             w.destroy()
         self._tl_cells.clear()
@@ -516,7 +563,7 @@ class ComposeWindow:
         edits_dir = self._output_dir / "_compose_edits"
         edits_dir.mkdir(parents=True, exist_ok=True)
 
-        def on_save(result_img: _Image.Image, replace: bool):
+        def on_save(result_img: _Image.Image, replace: bool, hitboxes=None):
             self._edit_counter += 1
             fname = f"edit_{self._edit_counter:04d}.png"
             dest  = edits_dir / fname
@@ -528,7 +575,9 @@ class ComposeWindow:
                 new_item = _CItem(item.anim_dir, dest)
                 self._items.insert(idx + 1, new_item)
 
-            self._rebuild_timeline()
+            # Defer rebuild until after the frame editor window is fully
+            # destroyed and its grab is released, so the timeline updates cleanly.
+            self._win.after(50, self._rebuild_timeline)
 
         FrameEditWindow(self._win, item.png, on_save)
 
@@ -790,6 +839,7 @@ class ComposeWindow:
 
     def _save(self):
         import shutil as _shutil
+        import tempfile as _tempfile
 
         name = self._v_name.get().strip()
         if not name:
@@ -809,47 +859,179 @@ class ComposeWindow:
                                        f"'{name}' already exists. Overwrite it?",
                                        parent=self._win):
                 return
-            _shutil.rmtree(out_dir)
-        out_dir.mkdir(parents=True)
 
-        new_frames = []
-        for i, item in enumerate(self._items):
-            dst = out_dir / f"{i:03d}.png"
-            if item.rotate:
-                img = Image.open(item.png).convert("RGBA")
-                img = _apply_transform(img, item.rotate, 0)
-                img.save(dst)
-            else:
-                _shutil.copy2(item.png, dst)
+        # Read existing frames.json for director/branches data
+        existing_fj: dict = {}
+        if out_dir.exists():
+            _fj = out_dir / "frames.json"
+            if _fj.exists():
+                try:
+                    existing_fj = json.loads(_fj.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
 
-            blobs = []
-            try:
-                meta = json.loads(
-                    (item.anim_dir / "frames.json").read_text(encoding="utf-8"))
-                hit = next((f for f in meta["frames"]
-                            if Path(f["file"]).stem == item.png.stem), None)
-                if hit:
-                    blobs = hit["blobs"]
-            except Exception:
-                pass
+        # Stage everything in a sibling temp directory first so that if any
+        # timeline item references files inside out_dir (same-name overwrite)
+        # they are read before out_dir is touched.
+        tmp = Path(_tempfile.mkdtemp(dir=self._output_dir))
+        try:
+            new_frames = []
+            for i, item in enumerate(self._items):
+                dst = tmp / f"{i:03d}.png"
+                if item.rotate:
+                    img = Image.open(item.png).convert("RGBA")
+                    img = _apply_transform(img, item.rotate, 0)
+                    img.save(dst)
+                else:
+                    _shutil.copy2(item.png, dst)
 
-            new_frames.append({"index": i, "file": f"{i:03d}.png",
-                                "blobs": blobs})
+                blobs = []
+                try:
+                    meta = json.loads(
+                        (item.anim_dir / "frames.json").read_text(encoding="utf-8"))
+                    hit = next((f for f in meta["frames"]
+                                if Path(f["file"]).stem == item.png.stem), None)
+                    if hit:
+                        blobs = hit["blobs"]
+                except Exception:
+                    pass
 
-        (out_dir / "frames.json").write_text(
-            json.dumps({"gif": "", "bg": [0, 0, 0], "tol": 20,
-                        "frames": new_frames}, indent=2),
-            encoding="utf-8")
+                entry: dict = {"index": i, "file": f"{i:03d}.png",
+                               "uid": item.uid, "blobs": blobs}
+                if item.director_meta:
+                    entry.update(item.director_meta)
+                new_frames.append(entry)
 
-        self._on_save()
+            # Preserve branch subdirectories from existing animation
+            if out_dir.exists():
+                for child in out_dir.iterdir():
+                    if child.is_dir() and child.name != "_compose_edits":
+                        dst_sub = tmp / child.name
+                        if not dst_sub.exists():
+                            _shutil.copytree(child, dst_sub)
+
+            # Build frames.json preserving director/branches sections
+            out_data: dict = {"gif": "", "bg": [0, 0, 0], "tol": 20,
+                              "frames": new_frames}
+            if "director" in existing_fj:
+                out_data["director"] = existing_fj["director"]
+            if "branches" in existing_fj:
+                out_data["branches"] = existing_fj["branches"]
+
+            (tmp / "frames.json").write_text(
+                json.dumps(out_data, indent=2),
+                encoding="utf-8")
+
+            # All frames staged successfully — now replace out_dir atomically.
+            if out_dir.exists():
+                _shutil.rmtree(out_dir)
+            _shutil.move(str(tmp), str(out_dir))
+
+        except Exception as exc:
+            _shutil.rmtree(tmp, ignore_errors=True)
+            messagebox.showerror("Save Failed", str(exc), parent=self._win)
+            return
+
+        self._needs_save = False
+        self._on_save(name)
         messagebox.showinfo("Saved",
                             f"'{name}' saved with {len(self._items)} frames.",
                             parent=self._win)
 
+    # ── tab switching ────────────────────────────────────────────────────────
+
+    def _show_compose_tab(self):
+        if self._active_tab == "compose":
+            return
+        # save director changes
+        if self._director_panel and self._director_panel.dirty:
+            self._director_panel.save()
+        self._director_view.pack_forget()
+        self._compose_view.pack(fill=tk.BOTH, expand=True)
+        self._tab_compose_btn.config(fg=ACCENT, bg=BG_SEL)
+        self._tab_director_btn.config(fg=FG_DIM, bg=BG_CARD)
+        self._active_tab = "compose"
+        # reload compose items from disk (Director may have changed metadata)
+        name = self._v_name.get().strip()
+        if name:
+            anim_dir = self._output_dir / name
+            if anim_dir.exists() and (anim_dir / "frames.json").exists():
+                self._items.clear()
+                self._tl_sel.clear()
+                self._prepopulate(anim_dir)
+                self._needs_save = False
+
+    def _show_director_tab(self):
+        if self._active_tab == "director":
+            return
+        name = self._v_name.get().strip()
+        if not name:
+            messagebox.showwarning(
+                "Save First",
+                "Enter a name and save the animation before using Director.",
+                parent=self._win)
+            return
+        anim_dir = self._output_dir / name
+        if not anim_dir.exists() or not (anim_dir / "frames.json").exists():
+            messagebox.showwarning(
+                "Save First",
+                "Save the animation before using Director.",
+                parent=self._win)
+            return
+        # prompt to save compose changes
+        if self._needs_save and self._items:
+            ans = messagebox.askyesnocancel(
+                "Unsaved Changes",
+                "Save compose changes before switching to Director?",
+                parent=self._win)
+            if ans is None:
+                return
+            if ans:
+                self._save()
+                if self._needs_save:
+                    return
+        # init or reload Director
+        from director import DirectorPanel
+        if self._director_panel is None:
+            self._director_panel = DirectorPanel(
+                self._director_view, anim_dir, self._win)
+        self._director_panel.load(anim_dir)
+        self._compose_view.pack_forget()
+        self._director_view.pack(fill=tk.BOTH, expand=True)
+        self._tab_compose_btn.config(fg=FG_DIM, bg=BG_CARD)
+        self._tab_director_btn.config(fg=ACCENT, bg=BG_SEL)
+        self._active_tab = "director"
+
+    # ── close ────────────────────────────────────────────────────────────────
+
     def _close(self):
+        # check director dirty state
+        if self._director_panel and self._director_panel.dirty:
+            ans = messagebox.askyesnocancel(
+                "Unsaved Director Changes",
+                "Director has unsaved changes. Save before closing?",
+                parent=self._win)
+            if ans is None:
+                return
+            if ans:
+                self._director_panel.save()
+        if self._needs_save and self._items:
+            ans = messagebox.askyesnocancel(
+                "Unsaved Animation",
+                f"The timeline has {len(self._items)} unsaved frame(s).\n"
+                "Save before closing?",
+                parent=self._win)
+            if ans is None:      # Cancel — stay open
+                return
+            if ans:              # Yes — save first
+                self._save()
+                if self._needs_save:   # save was cancelled / failed
+                    return
         self._cp_pause()
         self._destroy_ghost()
         try:
             self._win.destroy()
         except Exception:
             pass
+        if self._on_close:
+            self._on_close()
