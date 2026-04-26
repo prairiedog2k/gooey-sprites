@@ -238,7 +238,7 @@ class FrameEditWindow:
         self._hb_add_btn:      tk.Button | None = None
         self._hb_hide_btn:     tk.Button | None = None
         self._hb_listbox:      tk.Listbox | None = None
-        self._rot_lbl:         tk.Label  | None = None
+        self._rot_spin:        tk.Spinbox | None = None
         self._eraser_size_lbl: tk.Label  | None = None
 
         self._build_ui()
@@ -564,17 +564,61 @@ class FrameEditWindow:
         ctrl = tk.Frame(self._win, bg=BG_PANEL)
         ctrl.pack(fill=tk.X, padx=6, pady=(4, 0))
 
-        # Rotation readout (no slider — use the Rotate tool handle on canvas)
+        # Rotation spinner row
         rot_row = tk.Frame(ctrl, bg=BG_PANEL)
-        rot_row.pack(fill=tk.X, pady=1)
+        rot_row.pack(fill=tk.X, pady=2)
         tk.Label(rot_row, text="↻", bg=BG_PANEL, fg=FG_DIM,
                  font=("Segoe UI Symbol", 12)).pack(side=tk.LEFT, padx=(4, 2))
-        tk.Label(rot_row, text="rotation  (use R tool to adjust)",
-                 bg=BG_PANEL, fg=FG_DIM, font=("", 8),
-                 anchor=tk.W).pack(side=tk.LEFT, padx=4)
-        self._rot_lbl = tk.Label(rot_row, text="0°", bg=BG_PANEL,
-                                  fg=FG, font=("Consolas", 9), width=4, anchor=tk.E)
-        self._rot_lbl.pack(side=tk.RIGHT, padx=4)
+
+        # step buttons and spinbox
+        def _step(delta: int):
+            self._rotation.set(round(self._rotation.get()) + delta)
+            self._on_rotation_change()
+
+        tk.Button(rot_row, text="−", command=lambda: _step(-1),
+                  bg=BG_CARD, fg=FG, activeforeground=ACCENT,
+                  activebackground=BG_SEL, relief=tk.FLAT,
+                  width=2, font=("", 9), cursor="hand2"
+                  ).pack(side=tk.LEFT, padx=(2, 0))
+
+        self._rot_spin = tk.Spinbox(
+            rot_row, from_=-359, to=359, increment=1,
+            textvariable=self._rotation, width=5,
+            command=self._on_rotation_change,
+            bg=BG_CARD, fg=FG, insertbackground=FG,
+            buttonbackground=BG_CARD, relief=tk.FLAT,
+            font=("Consolas", 9), justify=tk.RIGHT,
+            disabledbackground=BG_CARD,
+        )
+        self._rot_spin.pack(side=tk.LEFT, padx=2)
+        self._rot_spin.bind("<Return>", lambda _: self._on_rotation_change())
+        self._rot_spin.bind("<FocusOut>", lambda _: self._on_rotation_change())
+
+        tk.Button(rot_row, text="+", command=lambda: _step(+1),
+                  bg=BG_CARD, fg=FG, activeforeground=ACCENT,
+                  activebackground=BG_SEL, relief=tk.FLAT,
+                  width=2, font=("", 9), cursor="hand2"
+                  ).pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Label(rot_row, text="°", bg=BG_PANEL, fg=FG_DIM,
+                 font=("", 8)).pack(side=tk.LEFT)
+
+        # quick preset ± 90
+        for lbl, deg in (("−90", -90), ("+90", +90)):
+            tk.Button(rot_row, text=lbl,
+                      command=lambda d=deg: (_step(d)),
+                      bg=BG_CARD, fg=FG_DIM, activeforeground=ACCENT,
+                      activebackground=BG_SEL, relief=tk.FLAT,
+                      padx=4, font=("", 8), cursor="hand2"
+                      ).pack(side=tk.LEFT, padx=2)
+
+        # Apply & Re-box — bakes rotation into _src and resizes canvas
+        tk.Button(rot_row, text="Apply & Re-box",
+                  command=self._do_apply_rotation,
+                  bg=BG_CARD, fg=ACCENT, activeforeground=ACCENT,
+                  activebackground=BG_SEL, relief=tk.FLAT,
+                  padx=6, font=("", 8), cursor="hand2"
+                  ).pack(side=tk.RIGHT, padx=(8, 4))
 
         # Eraser size row
         sz_row = tk.Frame(ctrl, bg=BG_PANEL)
@@ -831,7 +875,21 @@ class FrameEditWindow:
     # ── transform callbacks ───────────────────────────────────────────────────
 
     def _on_rotation_change(self, _=None):
-        self._rot_lbl.config(text=f"{self._rotation.get():.0f}°")
+        try:
+            # clamp to integer; Spinbox free-text entry may have non-numeric garbage
+            self._rotation.set(round(float(self._rotation.get())))
+        except (ValueError, tk.TclError):
+            self._rotation.set(0)
+        self._reset_corners()
+
+    def _do_apply_rotation(self):
+        """Bake the current rotation into _src, expanding the canvas to fit."""
+        angle = self._rotation.get()
+        if not angle:
+            return
+        self._src = self._src.rotate(-angle, expand=True, resample=Image.BICUBIC)
+        self._rotation.set(0)
+        self._erased_result = None
         self._reset_corners()
 
     def _do_flip_h(self):
@@ -845,8 +903,7 @@ class FrameEditWindow:
     def _do_reset(self):
         self._flip_h = False
         self._flip_v = False
-        self._rotation.set(0.0)
-        self._rot_lbl.config(text="0°")
+        self._rotation.set(0)
         self._reset_corners()
 
     def _on_eraser_size_change(self, _=None):
@@ -1689,9 +1746,7 @@ class FrameEditWindow:
         # Reset transform state
         self._flip_h = False
         self._flip_v = False
-        self._rotation.set(0.0)
-        if self._rot_lbl:
-            self._rot_lbl.config(text="0°")
+        self._rotation.set(0)
 
         # Reset all edit/tool state
         self._erased_result   = None

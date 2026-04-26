@@ -1,0 +1,59 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Three Wonders - Don't Pull_ Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "apple-bites-000.png",
+      "blobs": [
+        {
+          "x0": 101,
+          "y0": 14,
+          "x1": 127,
+          "y1": 40
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "file": "apple-bites-001.png",
+      "blobs": [
+        {
+          "x0": 133,
+          "y0": 14,
+          "x1": 159,
+          "y1": 40
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "file": "apple-bites-002.png",
+      "blobs": [
+        {
+          "x0": 168,
+          "y0": 14,
+          "x1": 190,
+          "y1": 40
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "file": "apple-bites-003.png",
+      "blobs": [
+        {
+          "x0": 201,
+          "y0": 14,
+          "x1": 222,
+          "y1": 40
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Three Wonders - Don't Pull_ Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "watermelon-bites-000.png",
+      "blobs": [
+        {
+          "x0": 103,
+          "y0": 54,
+          "x1": 135,
+          "y1": 71
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "file": "watermelon-bites-001.png",
+      "blobs": [
+        {
+          "x0": 136,
+          "y0": 54,
+          "x1": 167,
+          "y1": 71
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "file": "watermelon-bites-002.png",
+      "blobs": [
+        {
+          "x0": 168,
+          "y0": 54,
+          "x1": 231,
+          "y1": 71
+        }
+      ],
+      "hitboxes": []
+    },
+    {
+      "index": 3,
+      "file": "watermelon-bites-003.png",
+      "blobs": [
+        {
+          "x0": 168,
+          "y0": 54,
+          "x1": 231,
+          "y1": 71
+        }
+      ],
+      "hitboxes": []
+    }
+  ]
+}

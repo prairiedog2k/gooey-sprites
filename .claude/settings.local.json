@@ -2,32 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c \":*)",
-      "Bash(python3 -c \"import pytesseract; print\\(pytesseract.get_tesseract_version\\(\\)\\)\")",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\")",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred Hand Slap\" --output ./out)",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Idle\" --output ./out2)",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred\" --output ./out2)",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred\" --output ./out3)",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Idle\" --output ./out3)",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Crouch H. Punch\" --output ./out3)",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Walking\" --output ./out3)",
-      "Bash(python3 extract_sprites.py \"C:/Users/rober/Downloads/SNES - Super Street Fighter II_ The New Challengers - Fighters - E. Honda.gif\" \"Hundred\" --output ./out4)",
-      "Bash(git rm:*)",
-      "Bash(gh auth:*)",
-      "Bash(git --version)",
-      "Bash(gh --version)",
-      "Bash(find /c/Users/rober/OneDrive/Documents -name *.png -not -path *_compose_edits*)",
-      "Bash(xargs -I{} dirname {})",
-      "Bash(python -c \"import frame_edit_window; print\\(''OK''\\)\")",
-      "Bash(python -c \"import frame_edit_window; import sprite_gui; print\\(''OK''\\)\")",
-      "Skill(update-config)",
-      "Skill(update-config:*)",
-      "Bash(python -c \"import compose_window; print\\(''OK''\\)\")",
-      "Bash(python -c \"import sprite_gui; import compose_window; print\\(''OK''\\)\")",
+      "Bash(python -c \":*)",
       "mcp__serena__check_onboarding_performed",
       "mcp__serena__onboarding",
       "mcp__serena__list_dir",
-      "mcp__serena__get_symbols_overview"
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__read_memory",
+      "mcp__serena__list_memories",
+      "mcp__serena__initial_instructions",
+      "mcp__serena__find_file"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "serena"
+  ]
 }

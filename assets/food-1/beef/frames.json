@@ -1,0 +1,47 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - The Punisher - Miscellaneous - Food Items.png",
+  "bg": [
+    145,
+    205,
+    122
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "beef-000.png",
+      "blobs": [
+        {
+          "x0": 103,
+          "y0": 45,
+          "x1": 151,
+          "y1": 87
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "file": "beef-001.png",
+      "blobs": [
+        {
+          "x0": 157,
+          "y0": 46,
+          "x1": 205,
+          "y1": 87
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "file": "beef-002.png",
+      "blobs": [
+        {
+          "x0": 209,
+          "y0": 45,
+          "x1": 257,
+          "y1": 87
+        }
+      ]
+    }
+  ]
+}

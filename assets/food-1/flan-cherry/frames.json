@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "flan-cherry-000.png",
+      "blobs": [
+        {
+          "x0": 6,
+          "y0": 185,
+          "x1": 36,
+          "y1": 209
+        }
+      ]
+    }
+  ]
+}

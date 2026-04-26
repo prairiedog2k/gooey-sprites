@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "croissant-000.png",
+      "blobs": [
+        {
+          "x0": 46,
+          "y0": 216,
+          "x1": 72,
+          "y1": 231
+        }
+      ]
+    }
+  ]
+}

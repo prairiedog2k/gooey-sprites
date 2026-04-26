@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "hot-dog-bun-000.png",
+      "blobs": [
+        {
+          "x0": 82,
+          "y0": 152,
+          "x1": 113,
+          "y1": 171
+        }
+      ]
+    }
+  ]
+}

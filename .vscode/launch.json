@@ -4,12 +4,18 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-        
         {
             "name": "gooey_sprites",
             "type": "debugpy",
             "request": "launch",
             "program": "gooey_sprites.py",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "slicer",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/slicer_gui.py",
             "console": "integratedTerminal"
         }
     ]

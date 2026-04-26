@@ -1,0 +1,46 @@
+{
+  "name": "character-template",
+  "version": 2,
+  "groups": {
+    "character": {
+      "parts": [
+        "waist",
+        "torso",
+        "left-thigh",
+        "right-thigh",
+        "head",
+        "left-shoulder",
+        "right-shoulder",
+        "left-shin",
+        "right-shin",
+        "left-upper-arm",
+        "right-upper-arm",
+        "left-foot",
+        "right-foot",
+        "left-forearm",
+        "right-forearm",
+        "left-hand",
+        "right-hand"
+      ],
+      "hierarchy": {
+        "waist":           "root",
+        "torso":           "waist",
+        "head":            "torso",
+        "left-shoulder":   "torso",
+        "left-upper-arm":  "left-shoulder",
+        "left-forearm":    "left-upper-arm",
+        "left-hand":       "left-forearm",
+        "right-shoulder":  "torso",
+        "right-upper-arm": "right-shoulder",
+        "right-forearm":   "right-upper-arm",
+        "right-hand":      "right-forearm",
+        "left-thigh":      "waist",
+        "left-shin":       "left-thigh",
+        "left-foot":       "left-shin",
+        "right-thigh":     "waist",
+        "right-shin":      "right-thigh",
+        "right-foot":      "right-shin"
+      }
+    }
+  }
+}

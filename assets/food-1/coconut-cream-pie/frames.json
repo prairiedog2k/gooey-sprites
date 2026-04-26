@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "coconut-cream-pie-000.png",
+      "blobs": [
+        {
+          "x0": 78,
+          "y0": 186,
+          "x1": 110,
+          "y1": 209
+        }
+      ]
+    }
+  ]
+}

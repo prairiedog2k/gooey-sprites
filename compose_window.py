@@ -55,7 +55,6 @@ class ComposeWindow:
         # Timeline state
         self._items:  list[_CItem] = []
         self._tl_sel: set[int]     = set()
-        self._edit_counter: int    = 0   # unique id for compose-edit temp PNGs
         self._needs_save:   bool   = False
 
         # Photo-image caches (keep refs to prevent GC)
@@ -262,17 +261,38 @@ class ComposeWindow:
         self._destroy_ghost()
         self._hide_drop_indicator()
 
+        new_item = self._stage_item(item)
         if not self._drag_active:
-            self._items.append(item.copy())
+            self._items.append(new_item)
         else:
             self._drag_active = False
             idx = self._drop_index(event.x_root, event.y_root)
             if idx >= 0:
-                self._items.insert(idx, item.copy())
+                self._items.insert(idx, new_item)
             else:
-                self._items.append(item.copy())
+                self._items.append(new_item)
 
         self._rebuild_timeline()
+
+    def _stage_item(self, source: _CItem) -> _CItem:
+        """Copy source PNG into this animation's _compose_edits folder.
+
+        Returns a new _CItem pointing at the local copy so the timeline is
+        self-contained and does not depend on the source animation folder.
+        If the animation name is not yet set the item is returned as-is;
+        _save will copy it at that point.
+        """
+        import shutil as _shutil
+        import uuid as _uuid
+        name = self._v_name.get().strip()
+        if not name:
+            return source.copy()
+        edits_dir = self._output_dir / name / "_compose_edits"
+        edits_dir.mkdir(parents=True, exist_ok=True)
+        dest = edits_dir / f"{_uuid.uuid4().hex[:12]}.png"
+        _shutil.copy2(source.png, dest)
+        return _CItem(self._output_dir / name, dest,
+                      source.rotate, source.skew_x)
 
     # ── ghost window ──────────────────────────────────────────────────────────
 
@@ -333,6 +353,9 @@ class ComposeWindow:
         pv_f = tk.Frame(hp, bg=BG_PANEL, width=280)
         hp.add(tl_f, minsize=300)
         hp.add(pv_f, minsize=220)
+        self._compose_hp = hp
+        hp.after(200, lambda: hp.sash_place(
+            0, max(300, hp.winfo_width() * 3 // 4), 0))
         self._build_timeline(tl_f)
         self._build_preview(pv_f)
 
@@ -560,12 +583,14 @@ class ComposeWindow:
 
         item = self._items[idx]
 
-        edits_dir = self._output_dir / "_compose_edits"
+        name = self._v_name.get().strip()
+        anim_dir = self._output_dir / name if name else self._output_dir
+        edits_dir = anim_dir / "_compose_edits"
         edits_dir.mkdir(parents=True, exist_ok=True)
 
         def on_save(result_img: _Image.Image, replace: bool, hitboxes=None):
-            self._edit_counter += 1
-            fname = f"edit_{self._edit_counter:04d}.png"
+            import uuid as _uuid
+            fname = f"edit_{_uuid.uuid4().hex[:8]}.png"
             dest  = edits_dir / fname
             result_img.save(dest)
 
@@ -902,10 +927,10 @@ class ComposeWindow:
                     entry.update(item.director_meta)
                 new_frames.append(entry)
 
-            # Preserve branch subdirectories from existing animation
+            # Preserve subdirectories from existing animation (branches + edits)
             if out_dir.exists():
                 for child in out_dir.iterdir():
-                    if child.is_dir() and child.name != "_compose_edits":
+                    if child.is_dir():
                         dst_sub = tmp / child.name
                         if not dst_sub.exists():
                             _shutil.copytree(child, dst_sub)

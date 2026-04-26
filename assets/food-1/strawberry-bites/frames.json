@@ -1,0 +1,59 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Three Wonders - Don't Pull_ Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "strawberry-bites-000.png",
+      "blobs": [
+        {
+          "x0": 99,
+          "y0": 126,
+          "x1": 125,
+          "y1": 152
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "file": "strawberry-bites-001.png",
+      "blobs": [
+        {
+          "x0": 131,
+          "y0": 126,
+          "x1": 157,
+          "y1": 152
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "file": "strawberry-bites-002.png",
+      "blobs": [
+        {
+          "x0": 174,
+          "y0": 130,
+          "x1": 200,
+          "y1": 151
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "file": "strawberry-bites-003.png",
+      "blobs": [
+        {
+          "x0": 206,
+          "y0": 130,
+          "x1": 230,
+          "y1": 144
+        }
+      ]
+    }
+  ]
+}

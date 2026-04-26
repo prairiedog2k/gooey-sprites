@@ -1,0 +1,50 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "steak-000.png",
+      "blobs": [
+        {
+          "x0": 59,
+          "y0": 16,
+          "x1": 107,
+          "y1": 108
+        }
+      ],
+      "hitboxes": []
+    },
+    {
+      "index": 1,
+      "file": "steak-001.png",
+      "blobs": [
+        {
+          "x0": 59,
+          "y0": 16,
+          "x1": 107,
+          "y1": 108
+        }
+      ],
+      "hitboxes": []
+    },
+    {
+      "index": 2,
+      "file": "steak-002.png",
+      "blobs": [
+        {
+          "x0": 59,
+          "y0": 16,
+          "x1": 107,
+          "y1": 108
+        }
+      ],
+      "hitboxes": []
+    }
+  ]
+}

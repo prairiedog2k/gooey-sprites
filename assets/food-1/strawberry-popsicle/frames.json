@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Three Wonders - Don't Pull_ Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "strawberry-popsicle-000.png",
+      "blobs": [
+        {
+          "x0": 219,
+          "y0": 214,
+          "x1": 239,
+          "y1": 233
+        }
+      ]
+    }
+  ]
+}

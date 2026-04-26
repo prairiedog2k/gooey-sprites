@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "pizza-slice-2-000.png",
+      "blobs": [
+        {
+          "x0": 118,
+          "y0": 156,
+          "x1": 150,
+          "y1": 171
+        }
+      ]
+    }
+  ]
+}

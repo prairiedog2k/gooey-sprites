@@ -5,6 +5,10 @@ import shutil as _shutil
 from pathlib import Path
 
 
+def _frame_name(out_dir: Path, idx: int) -> str:
+    return f"{out_dir.name}-{idx:03d}.png"
+
+
 def _cmd_delete_frames(out_dir: Path, indices: set[int]):
     """Remove frames at `indices`, renumber the rest, update frames.json."""
     meta_path = out_dir / "frames.json"
@@ -28,13 +32,14 @@ def _cmd_delete_frames(out_dir: Path, indices: set[int]):
         f["_tmp"] = tmp_path.name
 
     for new_idx, f in enumerate(kept):
-        tmp_path = out_dir / f["_tmp"]
-        final    = out_dir / f"{new_idx:03d}.png"
+        tmp_path  = out_dir / f["_tmp"]
+        new_file  = _frame_name(out_dir, new_idx)
+        final     = out_dir / new_file
         if tmp_path.exists():
             tmp_path.rename(final)
         del f["_tmp"]
         f["index"] = new_idx
-        f["file"]  = f"{new_idx:03d}.png"
+        f["file"]  = new_file
 
     meta["frames"] = kept
     meta_path.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
@@ -47,12 +52,13 @@ def _cmd_duplicate_frame(out_dir: Path, src_idx: int):
 
     src_frame = next(f for f in meta["frames"] if f["index"] == src_idx)
     new_idx   = max(f["index"] for f in meta["frames"]) + 1
+    new_file  = _frame_name(out_dir, new_idx)
 
-    _shutil.copy2(out_dir / src_frame["file"], out_dir / f"{new_idx:03d}.png")
+    _shutil.copy2(out_dir / src_frame["file"], out_dir / new_file)
 
     new_entry = {
         "index": new_idx,
-        "file":  f"{new_idx:03d}.png",
+        "file":  new_file,
         "blobs": src_frame["blobs"],
     }
     if src_frame.get("hitboxes"):
@@ -84,12 +90,13 @@ def _cmd_reorder_frames(out_dir: Path, src_idx: int, dst_idx: int):
 
     for new_idx, f in enumerate(frames):
         tmp_path = out_dir / f["_tmp"]
-        final    = out_dir / f"{new_idx:03d}.png"
+        new_file = _frame_name(out_dir, new_idx)
+        final    = out_dir / new_file
         if tmp_path.exists():
             tmp_path.rename(final)
         del f["_tmp"]
         f["index"] = new_idx
-        f["file"]  = f"{new_idx:03d}.png"
+        f["file"]  = new_file
 
     meta["frames"] = frames
     meta_path.write_text(_json.dumps(meta, indent=2), encoding="utf-8")

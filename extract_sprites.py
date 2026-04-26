@@ -2,14 +2,18 @@
 """
 extract_sprites.py
 
-Extracts individual sprites from a sprite-sheet GIF.
+Extracts individual sprites from a sprite-sheet image (GIF, PNG, etc.).
 
-Structure assumed:
-  - Full-width white horizontal lines divide the sheet into animation rows.
-  - Within each row, full-height white vertical lines divide it into cells.
+Structure supported:
+  - Sheets where full-width white/bright horizontal lines divide animation rows,
+    and full-height white vertical lines divide cells within each row (classic
+    labelled arcade sprite sheets).
+  - Sheets where rows and cells are separated only by strips of the background
+    colour with no white grid lines at all (e.g. Dhalsim.png-style sheets with
+    a solid dark background).
   - Each cell may contain a white text label near the top; sprite pixels are
     coloured (non-white, non-background) so the label is automatically excluded.
-  - Background is a solid color not present in any sprite.
+  - Background is detected from the image corners.
 
 Modes
 -----
@@ -74,6 +78,37 @@ def _sprite_paint_mask(arr: np.ndarray, bg: tuple, tol: int) -> np.ndarray:
     return ~is_bg
 
 
+# ── Sprite-zone detection ─────────────────────────────────────────────────────
+
+def find_sprite_zone_width(arr: np.ndarray, bg: tuple, tol: int,
+                           min_banner_coverage: float = 0.5,
+                           min_banner_columns: int = 20) -> int:
+    """Return the x-width of the sprite zone, masking out any right-side banner.
+
+    Scans columns left-to-right.  The first run of ``min_banner_columns``
+    consecutive columns where more than ``min_banner_coverage`` of their pixels
+    are non-background is treated as the start of an annotation block (e.g. a
+    solid-colour title card or credit banner).  All columns from that point
+    onward are excluded from further processing.
+
+    Returns the full image width when no such block is found, so sheets without
+    banners are unaffected.
+    """
+    h, w = arr.shape[:2]
+    diff = np.abs(arr[:, :, :3].astype(np.int32) - np.array(bg, dtype=np.int32))
+    nonbg_frac = (diff.max(axis=2) > tol).mean(axis=0)   # shape (w,)
+    is_banner = nonbg_frac > min_banner_coverage
+    run = 0
+    for x in range(w):
+        if is_banner[x]:
+            run += 1
+            if run >= min_banner_columns:
+                return x - min_banner_columns + 1
+        else:
+            run = 0
+    return w
+
+
 # ── Separator detection ────────────────────────────────────────────────────────
 
 def _merge_runs(indices: list[int]) -> list[tuple[int,int]]:
@@ -91,16 +126,49 @@ def _merge_runs(indices: list[int]) -> list[tuple[int,int]]:
 
 
 def find_horizontal_separators(arr: np.ndarray,
+                                bg: tuple = None,
+                                tol: int = 20,
                                 threshold: int = 200,
-                                min_coverage: float = 0.4) -> list[tuple[int,int]]:
+                                min_coverage: float = 0.4,
+                                min_sep_height: int = 3) -> list[tuple[int,int]]:
+    """Find rows that are separator lines.
+
+    Detects two kinds of separators:
+    - Bright/white rows (classic white-grid sprite sheets), and
+    - Rows that are ≥95 % background colour (non-white-grid sheets like Dhalsim).
+
+    min_sep_height: minimum consecutive separator-row count for a run to be
+    treated as a true boundary.  Short all-background gaps (e.g. 1-2 rows of
+    empty space between a steam wisp and the sprite body below) are ignored,
+    preventing them from splitting a single animation into separate cells.
+    """
     bright = (arr[:,:,0]>threshold) & (arr[:,:,1]>threshold) & (arr[:,:,2]>threshold)
-    rows = [int(y) for y in np.where(bright.mean(axis=1) >= min_coverage)[0]]
-    return _merge_runs(rows)
+    is_sep = bright.mean(axis=1) >= min_coverage
+
+    if bg is not None:
+        diff = np.abs(arr[:,:,:3].astype(np.int32) - np.array(bg, dtype=np.int32))
+        is_bg_px = diff.max(axis=2) <= tol
+        # A row must be 100 % background to count as a separator — even one
+        # sprite pixel disqualifies it. A % threshold is too loose on wide
+        # sheets where sparse top-of-head rows look >95 % background.
+        is_sep = is_sep | is_bg_px.all(axis=1)
+
+    rows = [int(y) for y in np.where(is_sep)[0]]
+    runs = _merge_runs(rows)
+    if min_sep_height > 1:
+        runs = [(s0, s1) for s0, s1 in runs if s1 - s0 + 1 >= min_sep_height]
+    return runs
 
 
 def find_vertical_separators_in_band(arr: np.ndarray, y0: int, y1: int,
                                       threshold: int = 200,
                                       min_coverage: float = 0.4) -> list[tuple[int,int]]:
+    """Find columns that are explicit white/bright separator lines within a band.
+
+    Only bright/white columns are treated as dividers — background-coloured gaps
+    between sprites within a row are intentionally NOT treated as separators so
+    that all sprites in a row stay in the same cell (= one animation).
+    """
     band  = arr[y0:y1]
     bright = (band[:,:,0]>threshold) & (band[:,:,1]>threshold) & (band[:,:,2]>threshold)
     cols  = [int(x) for x in np.where(bright.mean(axis=0) >= min_coverage)[0]]
@@ -124,7 +192,7 @@ def find_sprite_y_start(arr: np.ndarray,
                          x0: int, x1: int, y0: int, y1: int,
                          bg: tuple, tol: int) -> int:
     for y in range(y0, y1):
-        if sprite_fg_mask(arr[y:y+1, x0:x1], bg, tol).any():
+        if _sprite_paint_mask(arr[y:y+1, x0:x1], bg, tol).any():
             return y
     return y1
 
@@ -133,22 +201,30 @@ def segment_sprites(arr: np.ndarray,
                     x0: int, x1: int, y0: int, y1: int,
                     bg: tuple, tol: int,
                     min_w: int = 10, min_h: int = 10) -> list[tuple[int,int,int,int]]:
-    """Return (sx0,sy0,sx1,sy1) blobs in full-image coordinates, left-to-right."""
-    mask       = sprite_fg_mask(arr[y0:y1, x0:x1], bg, tol)
-    col_has_fg = mask.any(axis=0)
+    """Return (sx0,sy0,sx1,sy1) blobs in full-image coordinates, left-to-right.
+
+    Column spans are discovered with the strict mask (excludes near-white) so
+    text labels don't create false blobs.  Row extents within each span are then
+    measured with the relaxed paint mask so near-white sprite pixels (white
+    headbands, highlight shading, etc.) are included in the bounding box.
+    """
+    region     = arr[y0:y1, x0:x1]
+    strict     = sprite_fg_mask(region, bg, tol)
+    relaxed    = _sprite_paint_mask(region, bg, tol)
+    col_has_fg = strict.any(axis=0)
     sprites, in_sprite, sx = [], False, 0
     for cx, fg in enumerate(col_has_fg):
         if fg and not in_sprite:
             sx, in_sprite = cx, True
         elif not fg and in_sprite:
-            strip = mask[:, sx:cx]
+            strip = relaxed[:, sx:cx]
             rows  = np.where(strip.any(axis=1))[0]
             w, h  = cx - sx, (rows[-1] - rows[0] + 1) if rows.size else 0
             if rows.size and w >= min_w and h >= min_h:
                 sprites.append((x0+sx, y0+rows[0], x0+cx, y0+rows[-1]+1))
             in_sprite = False
     if in_sprite:
-        strip = mask[:, sx:]
+        strip = relaxed[:, sx:]
         rows  = np.where(strip.any(axis=1))[0]
         w, h  = len(col_has_fg) - sx, (rows[-1] - rows[0] + 1) if rows.size else 0
         if rows.size and w >= min_w and h >= min_h:
@@ -156,10 +232,141 @@ def segment_sprites(arr: np.ndarray,
     return sprites
 
 
-# ── Compositing ────────────────────────────────────────────────────────────────
+# ── Blob type aliases ──────────────────────────────────────────────────────────
 
 Blob  = tuple[int, int, int, int]   # (sx0, sy0, sx1, sy1) in sheet coordinates
 Frame = list[Blob]                   # one or more blobs that form one output frame
+
+
+# ── Touching-sprite splitter ────────────────────────────────────────────────────
+
+def _max_run_arr(arr: np.ndarray, threshold: float) -> int:
+    """Return the length of the longest contiguous run where arr[i] >= threshold."""
+    best = run = 0
+    for v in arr:
+        if v >= threshold:
+            run += 1
+            if run > best:
+                best = run
+        else:
+            run = 0
+    return best
+
+
+def _trim_blob_y(blob: Blob, arr: np.ndarray,
+                 bg: tuple, tol: int) -> "Blob | None":
+    """Narrow a blob's y-extent to only rows that contain non-background pixels."""
+    sx0, sy0, sx1, sy1 = blob
+    if sx0 >= sx1:
+        return None
+    region = arr[sy0:sy1, sx0:sx1]
+    diff   = np.abs(region[:, :, :3].astype(np.int32) - np.array(bg, dtype=np.int32))
+    rows   = np.where((diff.max(axis=2) > tol).any(axis=1))[0]
+    if rows.size == 0:
+        return None
+    return (sx0, sy0 + int(rows[0]), sx1, sy0 + int(rows[-1]) + 1)
+
+
+def _find_best_valley(profile: np.ndarray, min_w: int,
+                      valley_ratio: float, max_pinch_px: int,
+                      min_sustain_ratio: float = 0.20) -> "int | None":
+    """Return the column index of the deepest qualifying valley, or None.
+
+    A qualifying valley must satisfy all of:
+    - Absolute: column pixel count <= max_pinch_px
+    - Relative: count / min(left_peak, right_peak) < valley_ratio
+    - Sustain: each side must have a contiguous run of columns at >= 75% of its
+      peak whose length is >= min_sustain_ratio × the half-width of that side.
+      This prevents false splits on single sprites with narrow waists, which tend
+      to have short sustained-density runs even though their valley/peak ratio
+      can be low.
+    """
+    n = len(profile)
+    best_x, best_score = None, float('inf')
+    for x in range(min_w, n - min_w):
+        v = int(profile[x])
+        if v > max_pinch_px:
+            continue
+        left_part  = profile[:x]
+        right_part = profile[x + 1:]
+        lp = int(left_part.max())
+        rp = int(right_part.max())
+        if lp < 3 or rp < 3:
+            continue
+        ratio = v / min(lp, rp)
+        if ratio >= valley_ratio:
+            continue
+        l_run = _max_run_arr(left_part,  lp * 0.75)
+        r_run = _max_run_arr(right_part, rp * 0.75)
+        if l_run / x < min_sustain_ratio or r_run / (n - x - 1) < min_sustain_ratio:
+            continue
+        if ratio < best_score:
+            best_score, best_x = ratio, x
+    return best_x
+
+
+def _split_blob_recursive(blob: Blob, arr: np.ndarray, bg: tuple, tol: int,
+                          min_w: int, valley_ratio: float,
+                          max_pinch_px: int) -> "list[Blob]":
+    sx0, sy0, sx1, sy1 = blob
+    if sx1 - sx0 < 2 * min_w:
+        return [blob]
+
+    region  = arr[sy0:sy1, sx0:sx1]
+    diff    = np.abs(region[:, :, :3].astype(np.int32) - np.array(bg, dtype=np.int32))
+    profile = (diff.max(axis=2) > tol).sum(axis=0).astype(np.int32)
+
+    vx = _find_best_valley(profile, min_w, valley_ratio, max_pinch_px)
+    if vx is None:
+        return [blob]
+
+    # Split just before and just after the valley minimum column.
+    # The valley pixel is dropped; stitch_frames is prevented from re-merging
+    # these sub-blobs by the forced_splits mechanism in split_touching_blobs.
+    left_blob  = _trim_blob_y((sx0,          sy0, sx0 + vx,     sy1), arr, bg, tol)
+    right_blob = _trim_blob_y((sx0 + vx + 1, sy0, sx1,          sy1), arr, bg, tol)
+
+    if left_blob is None or right_blob is None:
+        return [blob]
+    if left_blob[2] - left_blob[0] < min_w or right_blob[2] - right_blob[0] < min_w:
+        return [blob]
+
+    return (_split_blob_recursive(left_blob,  arr, bg, tol, min_w, valley_ratio, max_pinch_px) +
+            _split_blob_recursive(right_blob, arr, bg, tol, min_w, valley_ratio, max_pinch_px))
+
+
+def split_touching_blobs(
+    blobs:        "list[Blob]",
+    arr:          np.ndarray,
+    bg:           tuple,
+    tol:          int,
+    min_w:        int   = 10,
+    valley_ratio: float = 0.35,
+    max_pinch_px: int   = 6,
+) -> "tuple[list[Blob], set[int]]":
+    """Split blobs containing multiple touching sprites at column pinch-points.
+
+    A pinch point is a column where the non-background pixel count drops to
+    <= max_pinch_px AND is less than valley_ratio × the lower surrounding peak.
+    Blobs are split recursively until no more pinch points are found.
+
+    Returns ``(new_blobs, forced_splits)`` where ``forced_splits`` is a set of
+    boundary indices *i* meaning ``new_blobs[i]`` and ``new_blobs[i+1]`` must
+    not be stitched into the same frame (they are separate sprites that were
+    touching pixel-to-pixel on the sheet).
+    """
+    result: list[Blob] = []
+    forced: set[int]   = set()
+    for blob in blobs:
+        sub  = _split_blob_recursive(blob, arr, bg, tol, min_w, valley_ratio, max_pinch_px)
+        base = len(result)
+        for j in range(len(sub) - 1):
+            forced.add(base + j)
+        result.extend(sub)
+    return result, forced
+
+
+# ── Compositing ────────────────────────────────────────────────────────────────
 
 
 def _max_opaque_pixels(images: list) -> int:
@@ -220,12 +427,18 @@ def flag_false_positives(scores: list[int]) -> list[bool]:
 
 
 def _compose_frame(blobs: Frame, arr: np.ndarray,
-                   bg: tuple, tol: int) -> Image.Image:
-    """Render a list of blobs onto a transparent canvas at their correct relative positions."""
+                   bg: tuple, tol: int,
+                   canvas_top: int = None,
+                   canvas_bottom: int = None) -> Image.Image:
+    """Render blobs onto a transparent canvas at their correct relative positions.
+
+    canvas_top / canvas_bottom pin the vertical extent so all frames in an
+    animation share the same height and no frame is clipped at the top.
+    """
     left   = min(b[0] for b in blobs)
-    top    = min(b[1] for b in blobs)
+    top    = canvas_top    if canvas_top    is not None else min(b[1] for b in blobs)
     right  = max(b[2] for b in blobs)
-    bottom = max(b[3] for b in blobs)
+    bottom = canvas_bottom if canvas_bottom is not None else max(b[3] for b in blobs)
     canvas = np.zeros((bottom - top, right - left, 4), dtype=np.uint8)
     for sx0, sy0, sx1, sy1 in blobs:
         piece      = arr[sy0:sy1, sx0:sx1].copy()
@@ -240,24 +453,40 @@ def _compose_frame(blobs: Frame, arr: np.ndarray,
 def stitch_frames(boxes: list[Blob],
                   arr: np.ndarray,
                   bg: tuple, tol: int,
-                  max_intra_gap: int = 4) -> tuple[list[Image.Image], list[Frame]]:
+                  max_intra_gap: int = 4,
+                  forced_splits: "set[int] | None" = None,
+                  ) -> tuple[list[Image.Image], list[Frame]]:
     """
     Group raw blobs into frames: consecutive blobs whose horizontal gap on the
     sheet is <= max_intra_gap are considered parts of the same frame.
+
+    forced_splits: set of boundary indices i where boxes[i] and boxes[i+1] must
+    NOT be stitched regardless of their pixel gap (they are separate sprites that
+    were touching on the sheet and have been split by split_touching_blobs).
 
     Returns (images, frames) where frames[i] is the list of blobs for image i.
     The blob lists are the metadata needed for manual re-stitching later.
     """
     if not boxes:
         return [], []
+    if forced_splits is None:
+        forced_splits = set()
     groups: list[Frame] = [[boxes[0]]]
-    for blob in boxes[1:]:
+    for i, blob in enumerate(boxes[1:], 1):
         gap = blob[0] - groups[-1][-1][2]
-        if gap <= max_intra_gap:
+        if gap <= max_intra_gap and (i - 1) not in forced_splits:
             groups[-1].append(blob)
         else:
             groups.append([blob])
-    images = [_compose_frame(g, arr, bg, tol) for g in groups]
+
+    # Use the global y extent across every frame so all frames share the same
+    # height — prevents top/bottom clipping on frames that are shorter than the
+    # tallest frame in the animation.
+    global_top    = min(b[1] for g in groups for b in g)
+    global_bottom = max(b[3] for g in groups for b in g)
+
+    images = [_compose_frame(g, arr, bg, tol, global_top, global_bottom)
+              for g in groups]
     return images, groups
 
 
@@ -294,6 +523,7 @@ FRAMES_JSON = "frames.json"
 def save_metadata(out_dir: Path, gif_path: str,
                   bg: tuple, tol: int, frames: list[Frame]) -> None:
     """Save frames.json alongside the extracted PNGs."""
+    anim_name = out_dir.name
     data = {
         "gif": str(Path(gif_path).resolve()),
         "bg":  list(bg),
@@ -301,7 +531,7 @@ def save_metadata(out_dir: Path, gif_path: str,
         "frames": [
             {
                 "index": i,
-                "file":  f"{i:03d}.png",
+                "file":  f"{anim_name}-{i:03d}.png",
                 "blobs": [{"x0": int(b[0]), "y0": int(b[1]),
                             "x1": int(b[2]), "y1": int(b[3])}
                            for b in frame],
@@ -321,10 +551,25 @@ def load_metadata(out_dir: Path) -> dict:
 
 # ── Manual stitch command ──────────────────────────────────────────────────────
 
+def _stitch_from_pngs(out_dir: Path, frame_metas: list[dict]) -> Image.Image:
+    """Compose a merged image by placing frame PNGs side-by-side (left to right)."""
+    imgs = [Image.open(out_dir / f["file"]).convert("RGBA") for f in frame_metas]
+    total_w = sum(im.width for im in imgs)
+    max_h   = max(im.height for im in imgs)
+    canvas  = Image.new("RGBA", (total_w, max_h), (0, 0, 0, 0))
+    x = 0
+    for im in imgs:
+        canvas.paste(im, (x, 0))
+        x += im.width
+    return canvas
+
+
 def cmd_stitch(out_dir: Path, frame_indices: list[int]) -> None:
     """
-    Merge the specified frame indices into a single frame, using the stored
-    sheet coordinates to compose them at their correct relative positions.
+    Merge the specified frame indices into a single frame.
+    When the original sprite sheet is available and blobs use sheet coordinates,
+    _compose_frame re-renders from the sheet.  Otherwise falls back to placing
+    the frame PNGs side-by-side and storing PNG-local blob coords.
     The result replaces the lowest-indexed frame; others are removed.
     Remaining frames are renumbered sequentially.
     """
@@ -336,21 +581,42 @@ def cmd_stitch(out_dir: Path, frame_indices: list[int]) -> None:
     if len(frame_indices) < 2:
         sys.exit("Specify at least two frame indices to stitch.")
 
-    gif_path = meta["gif"]
-    bg       = tuple(meta["bg"])
-    tol      = meta["tol"]
+    sorted_indices = sorted(frame_indices)
+    frames_to_merge = [meta["frames"][i] for i in sorted_indices]
 
-    arr = np.array(Image.open(gif_path).convert("RGBA"))
+    gif_path = meta.get("gif", "")
+    use_sheet = (
+        bool(gif_path)
+        and Path(gif_path).exists()
+        and not any(b.get("png_local") for f in frames_to_merge for b in f["blobs"])
+    )
 
-    # Collect all blobs from the frames to merge
-    all_blobs: Frame = []
-    for idx in sorted(frame_indices):
-        all_blobs.extend(
-            (b["x0"], b["y0"], b["x1"], b["y1"])
-            for b in meta["frames"][idx]["blobs"]
-        )
+    if use_sheet:
+        bg  = tuple(meta["bg"])
+        tol = meta["tol"]
+        arr = np.array(Image.open(gif_path).convert("RGBA"))
 
-    stitched = _compose_frame(all_blobs, arr, bg, tol)
+        all_blobs: Frame = []
+        for idx in sorted_indices:
+            all_blobs.extend(
+                (b["x0"], b["y0"], b["x1"], b["y1"])
+                for b in meta["frames"][idx]["blobs"]
+            )
+
+        stitched   = _compose_frame(all_blobs, arr, bg, tol)
+        new_blobs  = [{"x0": b[0], "y0": b[1], "x1": b[2], "y1": b[3]}
+                      for b in all_blobs]
+    else:
+        stitched   = _stitch_from_pngs(out_dir, frames_to_merge)
+        # Build PNG-local blob entries: one blob per source frame, placed side-by-side
+        new_blobs  = []
+        x = 0
+        for f in frames_to_merge:
+            img = Image.open(out_dir / f["file"])
+            new_blobs.append({"x0": x, "y0": 0,
+                               "x1": x + img.width, "y1": img.height,
+                               "png_local": True})
+            x += img.width
 
     keep_idx  = min(frame_indices)
     keep_file = out_dir / meta["frames"][keep_idx]["file"]
@@ -364,17 +630,16 @@ def cmd_stitch(out_dir: Path, frame_indices: list[int]) -> None:
         p.unlink(missing_ok=True)
 
     # Update blobs for the kept frame
-    meta["frames"][keep_idx]["blobs"] = [
-        {"x0": b[0], "y0": b[1], "x1": b[2], "y1": b[3]} for b in all_blobs
-    ]
+    meta["frames"][keep_idx]["blobs"] = new_blobs
 
     # Drop removed frames from the list
     meta["frames"] = [f for i, f in enumerate(meta["frames"]) if i not in remove]
 
     # Renumber: rename PNGs and update metadata
+    anim_name = out_dir.name
     for new_idx, frame in enumerate(meta["frames"]):
         old_path = out_dir / frame["file"]
-        new_file = f"{new_idx:03d}.png"
+        new_file = f"{anim_name}-{new_idx:03d}.png"
         new_path = out_dir / new_file
         if old_path != new_path and old_path.exists():
             old_path.rename(new_path)
@@ -477,10 +742,11 @@ def cmd_split(out_dir: Path, frame_idx: int,
     shift  = n_new - 1          # frames after the split shift right by this much
 
     # ── rename after-frames in reverse to avoid collisions ───────────────────
+    anim_name = out_dir.name
     if shift > 0:
         for old_f in reversed(meta["frames"][frame_idx + 1:]):
             old_path = out_dir / old_f["file"]
-            new_path = out_dir / f"{old_f['index'] + shift:03d}.png"
+            new_path = out_dir / f"{anim_name}-{old_f['index'] + shift:03d}.png"
             if old_path.exists():
                 old_path.rename(new_path)
 
@@ -489,7 +755,7 @@ def cmd_split(out_dir: Path, frame_idx: int,
 
     # ── save new pieces ───────────────────────────────────────────────────────
     for j, (img, _) in enumerate(rendered):
-        path = out_dir / f"{frame_idx + j:03d}.png"
+        path = out_dir / f"{anim_name}-{frame_idx + j:03d}.png"
         img.save(path)
         print(f"  {path}  ({img.width}x{img.height})")
 
@@ -500,14 +766,14 @@ def cmd_split(out_dir: Path, frame_idx: int,
             for j, (_, fb) in enumerate(rendered):
                 new_frames.append({
                     "index": frame_idx + j,
-                    "file":  f"{frame_idx + j:03d}.png",
+                    "file":  f"{anim_name}-{frame_idx + j:03d}.png",
                     "blobs": [{"x0": int(b[0]), "y0": int(b[1]),
                                "x1": int(b[2]), "y1": int(b[3])}
                               for b in fb],
                 })
         else:
             new_idx = i if i < frame_idx else i + shift
-            new_frames.append({**f, "index": new_idx, "file": f"{new_idx:03d}.png"})
+            new_frames.append({**f, "index": new_idx, "file": f"{anim_name}-{new_idx:03d}.png"})
 
     meta["frames"] = new_frames
     (out_dir / FRAMES_JSON).write_text(json.dumps(meta, indent=2))
@@ -534,6 +800,7 @@ class SpriteSheet:
         self.img       = img.convert("RGBA")
         self.arr       = np.array(self.img)
         self.bg        = detect_bg_color(self.img)
+        self.sprite_w  = find_sprite_zone_width(self.arr, self.bg, self.tol)
         self._cells: Optional[list[Cell]] = None
 
     def cells(self) -> list[Cell]:
@@ -581,19 +848,23 @@ class SpriteSheet:
             self.arr, cell.x0, cell.x1, cell.sprite_y0, cell.y1,
             self.bg, self.tol,
         )
-        return stitch_frames(boxes, self.arr, self.bg, self.tol, max_intra_gap)
+        boxes, forced_splits = split_touching_blobs(boxes, self.arr, self.bg, self.tol)
+        return stitch_frames(boxes, self.arr, self.bg, self.tol, max_intra_gap, forced_splits)
 
     def _build_cells(self) -> list[Cell]:
-        h_seps = find_horizontal_separators(self.arr)
+        # Restrict all detection to the sprite zone (excludes right-side banners).
+        sprite_arr = self.arr[:, :self.sprite_w]
+        h_seps = find_horizontal_separators(sprite_arr, bg=self.bg, tol=self.tol,
+                                            min_sep_height=3)
         h_gaps = separators_to_gaps(h_seps, self.img.height)
         cells: list[Cell] = []
         for row_y0, row_y1 in h_gaps:
-            if row_y1 - row_y0 < 20:
+            if row_y1 - row_y0 < 8:
                 continue
-            v_seps = find_vertical_separators_in_band(self.arr, row_y0, row_y1)
-            v_gaps = separators_to_gaps(v_seps, self.img.width)
+            v_seps = find_vertical_separators_in_band(sprite_arr, row_y0, row_y1)
+            v_gaps = separators_to_gaps(v_seps, self.sprite_w)
             for col_x0, col_x1 in v_gaps:
-                if col_x1 - col_x0 < 20:
+                if col_x1 - col_x0 < 8:
                     continue
                 sprite_y0 = find_sprite_y_start(self.arr, col_x0, col_x1,
                                                 row_y0, row_y1, self.bg, self.tol)
@@ -619,8 +890,9 @@ def save_animation(out_dir: Path, sprites: list[Image.Image],
                    frames: list[Frame], gif_path: str,
                    bg: tuple, tol: int) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    anim_name = out_dir.name
     for i, sprite in enumerate(sprites):
-        sprite.save(out_dir / f"{i:03d}.png")
+        sprite.save(out_dir / f"{anim_name}-{i:03d}.png")
     save_metadata(out_dir, gif_path, bg, tol, frames)
 
 
@@ -707,7 +979,9 @@ examples:
         sys.exit(1)
 
     sheet = SpriteSheet(args.gif, tol=args.tol)
-    print(f"Background: RGB{sheet.bg}  |  Image: {sheet.img.width}×{sheet.img.height}")
+    sprite_w_note = (f"  |  Sprite zone: 0–{sheet.sprite_w - 1}"
+                     if sheet.sprite_w < sheet.img.width else "")
+    print(f"Background: RGB{sheet.bg}  |  Image: {sheet.img.width}×{sheet.img.height}{sprite_w_note}")
 
     # List mode
     if not args.all and not args.animation:

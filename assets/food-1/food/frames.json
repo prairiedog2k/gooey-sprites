@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - The Punisher - Miscellaneous - Food Items.png",
+  "bg": [
+    145,
+    205,
+    122
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "000.png",
+      "blobs": [
+        {
+          "x0": 167,
+          "y0": 99,
+          "x1": 191,
+          "y1": 115
+        }
+      ]
+    }
+  ]
+}

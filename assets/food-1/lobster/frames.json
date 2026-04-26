@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "lobster-000.png",
+      "blobs": [
+        {
+          "x0": 4,
+          "y0": 113,
+          "x1": 52,
+          "y1": 143
+        }
+      ]
+    }
+  ]
+}

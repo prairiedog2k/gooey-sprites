@@ -1,0 +1,47 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - The Punisher - Miscellaneous - Food Items.png",
+  "bg": [
+    145,
+    205,
+    122
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "turkey-000.png",
+      "blobs": [
+        {
+          "x0": 106,
+          "y0": 6,
+          "x1": 149,
+          "y1": 41
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "file": "turkey-001.png",
+      "blobs": [
+        {
+          "x0": 161,
+          "y0": 7,
+          "x1": 204,
+          "y1": 41
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "file": "turkey-002.png",
+      "blobs": [
+        {
+          "x0": 213,
+          "y0": 6,
+          "x1": 256,
+          "y1": 41
+        }
+      ]
+    }
+  ]
+}

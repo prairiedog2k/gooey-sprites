@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "sushi-plate-2-000.png",
+      "blobs": [
+        {
+          "x0": 97,
+          "y0": 124,
+          "x1": 139,
+          "y1": 143
+        }
+      ]
+    }
+  ]
+}

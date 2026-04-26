@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Cadillacs & Dinosaurs - Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "french-fries-000.png",
+      "blobs": [
+        {
+          "x0": 3,
+          "y0": 157,
+          "x1": 43,
+          "y1": 171
+        }
+      ]
+    }
+  ]
+}

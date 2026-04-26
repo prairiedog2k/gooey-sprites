@@ -1,0 +1,23 @@
+{
+  "gif": "C:\\Users\\rober\\Downloads\\Arcade - Three Wonders - Don't Pull_ Miscellaneous - Food.png",
+  "bg": [
+    0,
+    0,
+    248
+  ],
+  "tol": 20,
+  "frames": [
+    {
+      "index": 0,
+      "file": "orange-000.png",
+      "blobs": [
+        {
+          "x0": 38,
+          "y0": 295,
+          "x1": 56,
+          "y1": 310
+        }
+      ]
+    }
+  ]
+}

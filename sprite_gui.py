@@ -214,6 +214,24 @@ class SpriteGUI:
             return
         self._open_frame_edit(min(self.selected_frames))
 
+    def _open_slicer(self, frame_idx: int | None = None) -> None:
+        if not self.selected_anim:
+            messagebox.showwarning("No Animation", "Select an animation first.")
+            return
+        from slicer_window import SlicerWindow
+        pngs = sorted(self.selected_anim.glob("*.png"))
+        if not pngs:
+            messagebox.showwarning("No Frames",
+                                   "Selected animation has no PNG frames.")
+            return
+        if frame_idx is None:
+            frame_idx = min(self.selected_frames) if self.selected_frames else 0
+        frame_idx = max(0, min(frame_idx, len(pngs) - 1))
+        SlicerWindow(self.root, pngs[frame_idx], self.selected_anim.parent)
+
+    def _open_slicer_from_menu(self) -> None:
+        self._open_slicer()
+
     def _pv_faster(self) -> None:
         self._pv_delay.set(max(20, self._pv_delay.get() - 20))
 
@@ -358,6 +376,7 @@ class SpriteGUI:
         frames_menu = _menu()
         menubar.add_cascade(label="Frames", menu=frames_menu)
         frames_menu.add_command(label="Edit",      command=self._open_frame_edit_from_menu)
+        frames_menu.add_command(label="Slice…",    command=self._open_slicer_from_menu)
         frames_menu.add_command(label="Split",     command=self._split_frame)
         frames_menu.add_command(label="Merge",     command=self._merge_frames)
         frames_menu.add_command(label="Duplicate", command=self._duplicate_frame)
@@ -1147,8 +1166,22 @@ class SpriteGUI:
         if new_path.exists():
             messagebox.showerror("Duplicate", f"'{new_name}' already exists.")
             return
-        import shutil
         shutil.copytree(self.selected_anim, new_path)
+
+        # Rename root frame files to match the new folder name and update
+        # frames.json — same logic as _rename_folder so filenames stay
+        # consistent with their containing directory.
+        new_meta_path = new_path / "frames.json"
+        if new_meta_path.exists():
+            meta = json.loads(new_meta_path.read_text(encoding="utf-8"))
+            for f in meta["frames"]:
+                old_file = new_path / f["file"]
+                new_file_name = f"{new_name}-{f['index']:03d}.png"
+                if old_file.exists() and old_file.name != new_file_name:
+                    old_file.rename(new_path / new_file_name)
+                f["file"] = new_file_name
+            new_meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
         def _undo_dup_anim(p=new_path):
             shutil.rmtree(p)
             self._load_output()
@@ -1529,11 +1562,12 @@ class SpriteGUI:
         max_idx = max((f["index"] for f in meta["frames"]), default=0)
 
         new_frames_meta = []
+        anim_name = anim_dir.name
         for i, blob in enumerate(blobs):
             x0, y0, x1, y1 = blob["x0"], blob["y0"], blob["x1"], blob["y1"]
             region = src_img.crop((x0, y0, x1, y1))
             new_idx  = max_idx + 1 + i
-            new_file = f"{new_idx:03d}.png"
+            new_file = f"{anim_name}-{new_idx:03d}.png"
             region.save(anim_dir / new_file)
             new_frames_meta.append({
                 "index": new_idx,
@@ -1547,13 +1581,15 @@ class SpriteGUI:
         meta["frames"] = other_frames + new_frames_meta
         # Re-number sequentially so indices stay compact
         meta["frames"].sort(key=lambda f: f["index"])
+        anim_name = anim_dir.name
         for i, f in enumerate(meta["frames"]):
             old_file = anim_dir / f["file"]
-            new_file = anim_dir / f"{i:03d}.png"
+            new_name = f"{anim_name}-{i:03d}.png"
+            new_file = anim_dir / new_name
             if old_file != new_file:
                 old_file.rename(new_file)
             f["index"] = i
-            f["file"]  = f"{i:03d}.png"
+            f["file"]  = new_name
         (anim_dir / "frames.json").write_text(
             _json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -2605,15 +2641,129 @@ class SpriteGUI:
             self._update_sel_label()
         n = len(self.selected_frames)
         menu = self._context_menu([
-            ("Edit Frame…",           lambda i=idx: self._open_frame_edit(i), n == 1),
+            ("Edit Frame…",           lambda i=idx: self._open_frame_edit(i),  n == 1),
+            ("Slice…",                lambda i=idx: self._open_slicer(i),       n == 1),
             None,
             ("Split",                self._split_frame,            n == 1),
             (f"Merge {n} frames",    self._merge_frames,           n >= 2),
             ("Duplicate",            self._duplicate_frame,        n == 1),
+            ("Move to Animation…",   self._cmd_move_frame_to_anim, n == 1),
             None,
             (f"Delete {n} frame(s)", self._delete_selected_frames, True),
         ])
         menu.post(event.x_root, event.y_root)
+
+    def _cmd_move_frame_to_anim(self):
+        if not self.selected_anim or len(self.selected_frames) != 1:
+            messagebox.showwarning("Move Frame", "Select exactly 1 frame first.")
+            return
+        src_dir  = self.selected_anim
+        src_name = src_dir.name
+        frame_idx = next(iter(self.selected_frames))
+
+        existing = [d.name for d in self._anim_dirs if d != src_dir]
+        hint = (f"Existing: {', '.join(existing)}\n\nAnimation name:"
+                if existing else "Animation name:")
+        dlg      = _InputDialog(self.root, "Move to Animation", hint, "")
+        dst_name = dlg.result
+        if not dst_name:
+            return
+        dst_name = dst_name.strip()
+        if not dst_name or dst_name == src_name:
+            messagebox.showwarning("Move Frame",
+                                   "Destination must differ from the source animation.")
+            return
+
+        dst_dir = src_dir.parent / dst_name
+        if dst_dir.exists() and not (dst_dir / "frames.json").exists():
+            messagebox.showerror("Move Frame",
+                                 f"'{dst_name}' exists but is not a valid animation folder.")
+            return
+
+        src_meta_path = src_dir / "frames.json"
+        src_meta = json.loads(src_meta_path.read_text(encoding="utf-8"))
+        src_frame = next((f for f in src_meta["frames"] if f["index"] == frame_idx), None)
+        if src_frame is None:
+            messagebox.showerror("Move Frame", f"Frame {frame_idx} not found.")
+            return
+
+        # Snapshots for undo
+        src_snap = _snapshot_anim_dir(src_dir)
+        dst_snap = _snapshot_anim_dir(dst_dir) if dst_dir.exists() else {}
+        dst_existed = dst_dir.exists()
+
+        # Prepare destination
+        dst_dir.mkdir(exist_ok=True)
+        dst_meta_path = dst_dir / "frames.json"
+        if dst_meta_path.exists():
+            dst_meta = json.loads(dst_meta_path.read_text(encoding="utf-8"))
+            new_idx = max((f["index"] for f in dst_meta["frames"]), default=-1) + 1
+        else:
+            dst_meta = {
+                "gif": src_meta.get("gif", ""),
+                "bg":  src_meta.get("bg",  [0, 0, 0]),
+                "tol": src_meta.get("tol", 20),
+                "frames": [],
+            }
+            new_idx = 0
+
+        # Check for filename collision in destination
+        new_file_name = f"{dst_name}-{new_idx:03d}.png"
+        if (dst_dir / new_file_name).exists():
+            messagebox.showerror("Move Frame",
+                                 f"'{new_file_name}' already exists in '{dst_name}'.")
+            return
+
+        # Copy PNG, add to destination metadata
+        shutil.copy2(src_dir / src_frame["file"], dst_dir / new_file_name)
+        new_entry: dict = {
+            "index": new_idx,
+            "file":  new_file_name,
+            "blobs": src_frame.get("blobs", []),
+        }
+        if src_frame.get("hitboxes"):
+            new_entry["hitboxes"] = list(src_frame["hitboxes"])
+        dst_meta["frames"].append(new_entry)
+        dst_meta_path.write_text(json.dumps(dst_meta, indent=2), encoding="utf-8")
+
+        # Remove from source (handles delete + renumber)
+        from frame_ops import _cmd_delete_frames
+        _cmd_delete_frames(src_dir, {frame_idx})
+
+        def _undo(sd=src_dir, ss=src_snap, dd=dst_dir, ds=dst_snap,
+                  de=dst_existed, dn=dst_name):
+            _restore_anim_dir(sd, ss)
+            if de:
+                _restore_anim_dir(dd, ds)
+            else:
+                if dd.exists():
+                    shutil.rmtree(dd)
+                self._managed_anims = [n for n in self._managed_anims if n != dn]
+            self._load_output()
+            if self._project_path:
+                self._write_current_project(self._project_path)
+            else:
+                self._mark_dirty()
+            self._select_anim_by_path(sd)
+
+        self._push_undo(
+            f"Move frame {frame_idx} from '{src_name}' to '{dst_name}'", _undo)
+        if dst_name not in self._managed_anims:
+            self._managed_anims.append(dst_name)
+        self.selected_frames.clear()
+        self._last_clicked = None
+        self._load_output()
+        if self._project_path:
+            self._write_current_project(self._project_path)
+        else:
+            self._mark_dirty()
+        # Select the destination animation
+        for i, d in enumerate(self._anim_dirs):
+            if d == dst_dir:
+                self._select_list_item(i)
+                break
+        self._set_status(
+            f"Moved frame {frame_idx} from '{src_name}' to '{dst_name}'.")
 
     def _open_frame_edit(self, frame_idx: int):
         if not self.selected_anim:
